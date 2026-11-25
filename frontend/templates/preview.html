@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KindleHermes — Paperwhite 10th Gen Simulator</title>
+  <link rel="stylesheet" href="/static/preview.css">
+</head>
+<body>
+  <header class="toolbar">
+    <div class="tb-group">
+      <span class="tb-badge">PW4 · {{ kindle_width }}&times;{{ kindle_height }}</span>
+      <button id="mode-web" class="tb-btn active" type="button">Interactive Web</button>
+      <button id="mode-native" class="tb-btn" type="button">Native FBInk PNG</button>
+      <button id="mode-lockscreen" class="tb-btn" type="button">Smart Lock Screen</button>
+    </div>
+
+    <div class="tb-group">
+      <select id="slide-select" class="tb-select" style="display:none;">
+        <option value="smart">Slide: Smart Context</option>
+        <option value="auto">Slide: Active Auto Mode</option>
+        <option value="calendar">Slide: Calendar</option>
+        <option value="planning">Slide: Planning &amp; Briefing</option>
+        <option value="weather">Slide: Weather</option>
+      </select>
+
+      <select id="sim-time" class="tb-select" title="Use your device's real time or simulate time of day">
+        <option value="">Clock: Real Local Time</option>
+        <option value="14:20">Sim: 14:20 (In Event)</option>
+        <option value="15:40">Sim: 15:40 (Next Up)</option>
+        <option value="22:00">Sim: 22:00 (Day Done)</option>
+      </select>
+
+      <select id="mock-select" class="tb-select">
+        <option value="">Data: Server Default</option>
+        <option value="1">Data: Mock Demo</option>
+        <option value="0">Data: Live Feeds</option>
+      </select>
+
+      <button id="flash-toggle" class="tb-btn active" type="button">E-Ink Flash</button>
+      <button id="hitbox-toggle" class="tb-btn" type="button" style="display:none;">Show Hitboxes</button>
+      <a id="export-png" class="tb-btn" href="/lockscreen.png" download="hermes_1072x1448.png">Export PNG</a>
+      <a class="tb-btn" href="/app" style="background:#fff;color:#111;">Companion (/app) &rarr;</a>
+    </div>
+  </header>
+
+  <main class="stage">
+    <div class="kindle-bezel">
+      <div id="screen-viewport" class="screen-viewport">
+        <div id="screen-scaler" class="screen-scaler">
+          <iframe id="kindle-iframe" src="/kindle?screen=home" title="KindleHermes OS"></iframe>
+          <div id="native-stage">
+            <img id="native-img" alt="Rendered 1072x1448 E-Ink Screen" />
+            <div id="hitbox-layer"></div>
+          </div>
+          <div id="flash-overlay" class="eink-flash-overlay"></div>
+        </div>
+      </div>
+      <div class="kindle-chin">kindle</div>
+    </div>
+
+    <div id="sim-status" class="status-bar">
+      <strong>{{ device_name }}</strong> ({{ kindle_width }}&times;{{ kindle_height }} @ {{ kindle_ppi }} PPI)
+    </div>
+  </main>
+
+  <script src="/static/preview.js"></script>
+</body>
+</html>

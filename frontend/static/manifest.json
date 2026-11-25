@@ -1,0 +1,10 @@
+{
+  "name": "KindleHermes Companion",
+  "short_name": "Hermes",
+  "description": "Cross-device planner, lock-screen designer, and remote controller for Kindle Paperwhite 10th Gen.",
+  "start_url": "/app",
+  "display": "standalone",
+  "background_color": "#f6f5f0",
+  "theme_color": "#111111",
+  "icons": []
+}

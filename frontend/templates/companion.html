@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="KindleHermes">
+  <meta name="theme-color" content="#111111">
+  <link rel="manifest" href="/manifest.json">
+  <title>KindleHermes Companion</title>
+  <link rel="stylesheet" href="/static/companion.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-badge">HERMES</span>
+      <div>
+        <div style="font-weight:800;font-size:16px;">KindleHermes Companion</div>
+        <div id="status-meta" class="brand-sub">{{ device_name }} &middot; {{ resolution }}</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button id="header-sync-loc-btn" class="btn btn-sm" type="button" title="Sync location &amp; time from this device">Sync Location &amp; Time</button>
+      <a class="nav-link" href="/preview">PW4 Simulator</a>
+      <a class="nav-link" href="/kindle">Raw Kindle View</a>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="plan">Plan &amp; Tasks</button>
+    <button class="tab-btn" data-tab="lockscreen">Lock Screen</button>
+    <button class="tab-btn" data-tab="apps">Hermes Apps &amp; Settings</button>
+  </nav>
+
+  <main class="container">
+    <!-- TAB 1: PLAN & TASKS -->
+    <section id="panel-plan" class="panel active">
+      <div class="card">
+        <div class="card-title">Today's Daily Focus (Shown on Kindle &amp; Lock Screen)</div>
+        <div class="row">
+          <input id="daily-focus-input" type="text" placeholder="What is the one thing that makes today a win?" />
+          <button id="save-focus-btn" class="btn btn-primary" type="button">Save</button>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">
+            <span>Priorities Checklist</span>
+            <button id="clear-done-btn" class="btn btn-sm" type="button">Clear Done</button>
+          </div>
+          <form id="add-task-form" class="row" style="margin-bottom:14px;">
+            <input id="new-task-title" type="text" placeholder="Add a priority..." required />
+            <select id="new-task-priority" style="width:84px;">
+              <option value="1">P1</option>
+              <option value="2">P2</option>
+              <option value="3">P3</option>
+            </select>
+            <button class="btn btn-primary" type="submit">Add</button>
+          </form>
+          <div id="task-list"></div>
+        </div>
+
+        <div>
+          <div class="card">
+            <div class="card-title">Pomodoro Remote (Synced with Kindle)</div>
+            <div class="pomo-display">
+              <div id="pomo-digits" class="pomo-digits">25m</div>
+              <div id="pomo-meta" class="pomo-meta">25m Focus · IDLE</div>
+              <div class="row-wrap" style="justify-content:center;margin-bottom:12px;">
+                <button id="pomo-toggle-btn" class="btn btn-primary" type="button">Start</button>
+                <button id="pomo-reset-btn" class="btn" type="button">Reset</button>
+              </div>
+              <div class="row-wrap" style="justify-content:center;">
+                <button class="btn btn-sm" data-pomo-mode="focus" type="button">25m Focus</button>
+                <button class="btn btn-sm" data-pomo-mode="short_break" type="button">5m Break</button>
+                <button class="btn btn-sm" data-pomo-mode="long_break" type="button">15m Rest</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">Live Agenda Preview</div>
+            <div id="agenda-summary"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: LOCK SCREEN DESIGNER -->
+    <section id="panel-lockscreen" class="panel">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">Lock-Screen Behavior (OTA Configured)</div>
+          <div class="field">
+            <label for="ls-mode-select">Mode when Kindle Locks</label>
+            <select id="ls-mode-select">
+              <option value="smart">Smart Context-Aware (NOW + Next + Tasks + Weather)</option>
+              <option value="cycle">Cycle Through Selected Slides</option>
+              <option value="time_of_day">Smart Time of Day (Morning Wx → Midday Smart → Evening Plan)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Slides Included in Cycle Mode</label>
+            <div id="ls-slide-list"></div>
+          </div>
+        </div>
+
+        <div class="card" style="text-align:center;">
+          <div class="card-title">
+            <span>Live 1072&times;1448 Lock Screen PNG</span>
+            <a id="ls-download-link" class="btn btn-sm" href="/lockscreen.png" download="hermes_lockscreen.png">Download PNG</a>
+          </div>
+          <div class="row-wrap" style="justify-content:center;margin-bottom:14px;">
+            <select id="ls-preview-slide" style="width:auto;">
+              <option value="auto">Auto (Active Mode)</option>
+              <option value="smart">Smart Overview</option>
+              <option value="calendar">Calendar Slide</option>
+              <option value="planning">Planning Slide</option>
+              <option value="weather">Weather Slide</option>
+            </select>
+            <select id="ls-preview-time" style="width:auto;">
+              <option value="">Real Clock</option>
+              <option value="14:20">Sim 14:20 (In Event)</option>
+              <option value="15:40">Sim 15:40 (Next Up)</option>
+              <option value="22:00">Sim 22:00 (Evening Clear)</option>
+            </select>
+            <button id="ls-refresh-btn" class="btn btn-sm" type="button">Refresh</button>
+          </div>
+          <div class="ls-preview-frame">
+            <img id="ls-preview-img" src="/lockscreen.png?slide=smart" alt="Kindle Lock Screen Preview" />
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: HERMES OS MODULES & SETTINGS -->
+    <section id="panel-apps" class="panel">
+      <div class="card" id="google-cal-card">
+        <div class="card-title">
+          <span>Google Calendar (Direct Multi-Calendar Sync)</span>
+          <span id="gcal-badge" class="prio-pill">NOT CONNECTED</span>
+        </div>
+        <div id="gcal-connected-view" style="display:none;">
+          <div class="row-wrap" style="justify-content:space-between;margin-bottom:12px;">
+            <div>
+              <strong id="gcal-account-email">Connected Account</strong>
+              <div style="font-size:13px;color:#5c5b57;">Choose which Google Calendars appear on your Kindle &amp; Smart Lock Screen:</div>
+            </div>
+            <div class="row">
+              <button id="gcal-refresh-btn" class="btn btn-sm" type="button">Refresh List</button>
+              <button id="gcal-disconnect-btn" class="btn btn-sm btn-danger" type="button">Disconnect</button>
+            </div>
+          </div>
+          <div id="gcal-calendar-list"></div>
+        </div>
+
+        <div id="gcal-setup-view">
+          <p style="font-size:14px;color:#5c5b57;margin-bottom:12px;line-height:1.45;">
+            Connect your Google account directly to merge <strong>all your Google Calendars</strong> (Primary, Work, Personal, etc.) onto your Kindle — no manual <code>.ics</code> links needed.
+          </p>
+          <div id="gcal-connect-ready" style="display:none;margin-bottom:14px;">
+            <a href="/api/google/auth" class="btn btn-primary">Connect Google Calendar &rarr;</a>
+            <button id="gcal-edit-creds-btn" class="btn btn-sm" type="button" style="margin-left:8px;">Edit OAuth Credentials</button>
+          </div>
+          <div id="gcal-creds-box">
+            <details style="margin-bottom:12px;font-size:13px;color:#444;background:#f5f4ef;padding:10px 12px;border-radius:8px;border:1px solid #d7d4cb;">
+              <summary style="font-weight:700;cursor:pointer;">One-time 2-minute Google Cloud OAuth setup</summary>
+              <ol style="margin:8px 0 0 18px;line-height:1.6;">
+                <li>Open <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener">Google Cloud Console</a> &rarr; enable <strong>Google Calendar API</strong>.</li>
+                <li>Go to <strong>Google Auth Platform &rarr; Audience</strong> &rarr; add your Gmail under <strong>Test users</strong>.</li>
+                <li>Go to <strong>Clients &rarr; Create Client &rarr; Web application</strong> and add this exact Authorized Redirect URI:
+                  <div style="margin:4px 0;"><code id="gcal-redirect-uri" style="background:#fff;padding:4px 8px;border-radius:4px;border:1px solid #ccc;display:inline-block;word-break:break-all;">http://localhost:8000/api/google/callback</code></div>
+                </li>
+                <li>Paste your <strong>Client ID</strong> and <strong>Client Secret</strong> below (or in <code>.env</code>) and click Connect!</li>
+              </ol>
+            </details>
+            <div class="grid-2" style="gap:10px;margin-bottom:10px;">
+              <div>
+                <label for="gcal-client-id" style="display:block;font-size:12px;font-weight:700;margin-bottom:4px;">Google OAuth Client ID</label>
+                <input id="gcal-client-id" type="text" placeholder="123456789-xxxx.apps.googleusercontent.com" />
+              </div>
+              <div>
+                <label for="gcal-client-secret" style="display:block;font-size:12px;font-weight:700;margin-bottom:4px;">Google OAuth Client Secret</label>
+                <input id="gcal-client-secret" type="password" placeholder="GOCSPX-..." />
+              </div>
+            </div>
+            <div class="row-wrap">
+              <button id="gcal-save-creds-btn" class="btn btn-primary btn-sm" type="button">Save &amp; Enable Connect</button>
+              <a id="gcal-connect-inline-btn" href="/api/google/auth" class="btn btn-sm" style="display:none;">Connect Google Calendar &rarr;</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">Hermes OS Home Screen Apps (OTA)</div>
+          <p style="font-size:13px;color:#5c5b57;margin-bottom:12px;">
+            Toggle which apps appear on your Kindle Home Screen. Changes take effect immediately without touching your Kindle.
+          </p>
+          <div id="module-list"></div>
+          <button id="refresh-briefing-btn" class="btn" type="button" style="width:100%;margin-top:8px;">
+            Regenerate Morning Briefing Now
+          </button>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Feeds, Weather &amp; Sync Settings</div>
+          <div class="field">
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+              <input id="setting-mock" type="checkbox" style="width:18px;height:18px;" />
+              <span>Use Demo Mock Data (uncheck for Live Calendar, Weather &amp; Gemini)</span>
+            </label>
+          </div>
+          <div class="field">
+            <label for="setting-ics">Optional .ics Calendar URL(s) (fallback if not using Google OAuth — one per line)</label>
+            <textarea id="setting-ics" rows="2" placeholder="https://calendar.google.com/calendar/ical/.../basic.ics"></textarea>
+          </div>
+          <div class="field">
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+              <input id="setting-auto-loc" type="checkbox" style="width:18px;height:18px;" />
+              <span>Auto-sync location &amp; timezone from my phone / MacBook</span>
+            </label>
+            <div id="location-sync-meta" style="font-size:12px;color:#5c5b57;margin:6px 0 10px 28px;"></div>
+            <button id="sync-loc-btn" class="btn btn-sm" type="button" style="margin-left:28px;">
+              Use This Device's Location &amp; Time Now
+            </button>
+          </div>
+          <div class="field">
+            <label for="setting-city">City (Open-Meteo Weather)</label>
+            <div class="row">
+              <input id="setting-city" type="text" placeholder="Berlin" />
+              <button id="city-search-btn" class="btn btn-sm" type="button">Search</button>
+            </div>
+            <div id="city-results"></div>
+          </div>
+          <div class="row" style="margin-bottom:14px;">
+            <div style="flex:1;">
+              <label for="setting-lat" style="font-size:12px;font-weight:700;">Latitude</label>
+              <input id="setting-lat" type="text" />
+            </div>
+            <div style="flex:1;">
+              <label for="setting-lon" style="font-size:12px;font-weight:700;">Longitude</label>
+              <input id="setting-lon" type="text" />
+            </div>
+          </div>
+          <div class="field">
+            <label for="setting-tz">Timezone (IANA)</label>
+            <input id="setting-tz" type="text" placeholder="Europe/Berlin" />
+          </div>
+          <button id="save-settings-btn" class="btn btn-primary" type="button" style="width:100%;">
+            Save Settings
+          </button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="auth-overlay" class="auth-overlay">
+    <div class="auth-card">
+      <div class="brand-badge" style="display:inline-block;margin-bottom:12px;">HERMES LOCK</div>
+      <h2 style="font-size:20px;margin-bottom:6px;">Enter Access PIN / Token</h2>
+      <p style="font-size:14px;color:#5c5b57;margin-bottom:16px;">This KindleHermes server is protected by a personal token.</p>
+      <form id="auth-form">
+        <input id="auth-pin-input" type="password" placeholder="HERMES_TOKEN" required style="margin-bottom:12px;" />
+        <div id="auth-error" style="color:#b42318;font-size:13px;margin-bottom:10px;"></div>
+        <button class="btn btn-primary" type="submit" style="width:100%;">Unlock</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <script src="/static/companion.js"></script>
+</body>
+</html>
