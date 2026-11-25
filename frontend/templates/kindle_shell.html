@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width={{ device_width }}, initial-scale=1.0, user-scalable=no">
+  <title>KindleHermes OS — {{ screen|upper }}</title>
+  {% if inline_css %}
+  <style>{{ inline_css | safe }}</style>
+  {% else %}
+  <link rel="stylesheet" href="/static/kindle.css">
+  {% endif %}
+</head>
+<body>
+{% set refresh_sec = pomo.next_tick_sec if pomo.is_running else 300 %}
+<div id="hermes-root"
+     class="screen-root"
+     data-screen="{{ screen }}"
+     data-sim-time="{{ sim_time }}"
+     data-mock="{{ mock_override }}"
+     data-token="{{ token }}"
+     data-refresh-sec="{{ refresh_sec }}"
+     data-alert-flash="{{ '1' if pomo.alert_flash else '0' }}">
+
+{% if is_lockscreen %}
+  {# ===================================================================== #}
+  {# SMART CONTEXT-AWARE LOCK SCREENS (1072x1448 Full Bleed, No Chrome)    #}
+  {# ===================================================================== #}
+
+  {% if screen == 'lockscreen_smart' %}
+    <div class="ls-header">
+      <div class="ls-header-left">
+        <span class="ls-time mono">{{ bundle.time_str }}</span>
+        <span class="ls-date">{{ bundle.date_short }}</span>
+      </div>
+      <div class="ls-header-right">
+        <div class="ls-weather-chip">
+          {{ weather.svg_sm | safe }}
+          <span>{{ weather.temp }}&deg;C &middot; {{ weather.condition }} &middot; {{ weather.rain_prob_6h }}%</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="ls-body">
+      {# LEFT COLUMN: Context-Aware Event Spotlight (NOW / NEXT UP) #}
+      <div class="ls-left">
+        {% if cal.state == 'in_event' and cal.current_event %}
+          <div class="ls-hero-card">
+            <div class="ls-hero-banner">
+              <span style="display:table-cell;text-align:left;">&#9679; HAPPENING NOW</span>
+              <span class="mono" style="display:table-cell;text-align:right;">{{ cal.current_event.remaining_label | upper }}</span>
+            </div>
+            <div class="ls-hero-body">
+              <div class="ls-hero-title serif">{{ cal.current_event.title }}</div>
+              <div class="ls-hero-time mono">{{ cal.current_event.time_range }}</div>
+              {% if cal.current_event.location %}
+                <div class="ls-hero-loc">{{ cal.current_event.location }}</div>
+              {% endif %}
+              <div class="seg-bar" style="margin-top:24px;">
+                {% set filled_ev = (cal.current_event.progress_pct // 10) %}
+                {% for i in range(10) %}
+                  <div class="seg-cell {% if i < filled_ev %}filled{% endif %}"></div>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+
+          {% if cal.next_event %}
+            <div class="ls-secondary-card">
+              <div style="margin-bottom:12px;">
+                <span class="pill pill-dark">NEXT UP &middot; {{ cal.next_event.starts_in_label | upper }}</span>
+              </div>
+              <div class="serif" style="font-size:34px;font-weight:700;line-height:1.18;margin-bottom:10px;">
+                {{ cal.next_event.title }}
+              </div>
+              <div class="mono" style="font-size:24px;font-weight:800;">{{ cal.next_event.time_range }}</div>
+              {% if cal.next_event.location %}
+                <div style="font-size:21px;color:#333333;margin-top:6px;">{{ cal.next_event.location }}</div>
+              {% endif %}
+            </div>
+          {% else %}
+            <div class="ls-secondary-card">
+              <div style="margin-bottom:10px;"><span class="pill">AFTER THIS</span></div>
+              <div class="serif" style="font-size:30px;font-weight:700;line-height:1.25;">
+                No more meetings today. Clear evening ahead.
+              </div>
+            </div>
+          {% endif %}
+
+        {% elif cal.state == 'between_events' and cal.next_event %}
+          <div class="ls-hero-card">
+            <div class="ls-hero-banner">
+              <span style="display:table-cell;text-align:left;">NEXT EVENT</span>
+              <span class="mono" style="display:table-cell;text-align:right;">{{ cal.next_event.starts_in_label | upper }}</span>
+            </div>
+            <div class="ls-hero-body">
+              <div class="ls-hero-title serif">{{ cal.next_event.title }}</div>
+              <div class="ls-hero-time mono">{{ cal.next_event.time_range }}</div>
+              {% if cal.next_event.location %}
+                <div class="ls-hero-loc">{{ cal.next_event.location }}</div>
+              {% endif %}
+            </div>
+          </div>
+
+          <div class="ls-secondary-card">
+            <div style="margin-bottom:12px;">
+              <span class="pill">FREE WINDOW</span>
+              {% if pomo.is_running %}
+                <span class="pill pill-dark mono" style="margin-left:8px;">POMO {{ pomo.remaining_label }}</span>
+              {% endif %}
+            </div>
+            <div class="serif" style="font-size:28px;font-weight:700;line-height:1.3;margin-bottom:12px;">
+              {{ briefing.concept_of_day.term }}
+            </div>
+            <div class="serif" style="font-size:22px;line-height:1.38;color:#222222;">
+              {{ briefing.concept_of_day.definition }}
+            </div>
+          </div>
+
+        {% else %}
+          <div class="ls-hero-card">
+            <div class="ls-hero-banner">
+              <span style="display:table-cell;text-align:left;">TODAY COMPLETE</span>
+              <span class="mono" style="display:table-cell;text-align:right;">CLEAR</span>
+            </div>
+            <div class="ls-hero-body">
+              {% if cal.tomorrow_events %}
+                <div style="margin-bottom:12px;"><span class="pill">FIRST UP TOMORROW</span></div>
+                <div class="ls-hero-title serif">{{ cal.tomorrow_events[0].title }}</div>
+                <div class="ls-hero-time mono">{{ cal.tomorrow_events[0].time_range }}</div>
+                {% if cal.tomorrow_events[0].location %}
+                  <div class="ls-hero-loc">{{ cal.tomorrow_events[0].location }}</div>
+                {% endif %}
+              {% else %}
+                <div class="ls-hero-title serif">Open Schedule</div>
+                <div class="ls-hero-loc">No scheduled events remaining today or tomorrow.</div>
+              {% endif %}
+            </div>
+          </div>
+
+          <div class="ls-secondary-card">
+            <div style="margin-bottom:10px;"><span class="pill">CONCEPT OF THE DAY</span></div>
+            <div class="serif" style="font-size:28px;font-weight:700;margin-bottom:8px;">{{ briefing.concept_of_day.term }}</div>
+            <div class="serif" style="font-size:22px;line-height:1.38;color:#222222;">{{ briefing.concept_of_day.definition }}</div>
+          </div>
+        {% endif %}
+
+        {# Compact Upcoming 4-Hour Weather Strip at bottom of Left Column #}
+        <div style="border:3px solid #000000;margin-top:26px;padding:16px 14px;background:#FFFFFF;">
+          <div style="font-size:17px;font-weight:800;letter-spacing:2px;border-bottom:2px solid #000000;padding-bottom:8px;margin-bottom:10px;">
+            NEXT HOURS &middot; {{ weather.city | upper }}
+          </div>
+          <div class="hourly-table">
+            {% for h in weather.hourly[:4] %}
+              <div class="hourly-cell" style="padding:6px 2px;">
+                <div class="mono" style="font-size:18px;font-weight:700;margin-bottom:6px;">{{ h.hour_label }}</div>
+                <div>{{ h.svg | safe }}</div>
+                <div class="mono" style="font-size:24px;font-weight:800;margin-top:6px;">{{ h.temp }}&deg;</div>
+                <div style="font-size:17px;color:#444444;">{{ h.rain_prob }}%</div>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      {# RIGHT COLUMN: Rest of Today's Events + Top Tasks #}
+      <div class="ls-right">
+        <div style="margin-bottom:32px;">
+          <div class="ls-section-title">
+            {% if cal.upcoming_today %}REST OF TODAY{% else %}TOMORROW PREVIEW{% endif %}
+          </div>
+          {% set right_events = cal.upcoming_today[:5] if cal.upcoming_today else cal.tomorrow_events[:4] %}
+          {% if right_events %}
+            {% for ev in right_events %}
+              <div class="ls-agenda-item">
+                <div class="ls-agenda-time mono">{{ ev.start_label }}</div>
+                <div class="ls-agenda-title">
+                  {{ ev.title }}
+                  {% if ev.location %}<div style="font-size:18px;color:#555555;margin-top:2px;">{{ ev.location }}</div>{% endif %}
+                </div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div style="font-size:22px;color:#555555;padding:10px 0;">No upcoming events listed.</div>
+          {% endif %}
+        </div>
+
+        <div>
+          <div class="ls-section-title">TODAY'S TASKS</div>
+          {% for t in tasks[:5] %}
+            <div class="ls-task-item">
+              <div class="ls-task-box">
+                <svg width="28" height="28" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <rect x="2" y="2" width="20" height="20" fill="{{ '#000000' if t.completed else '#FFFFFF' }}" stroke="#000000" stroke-width="2.5"/>
+                  {% if t.completed %}
+                    <path d="M6 12l4 4 8-8" fill="none" stroke="#FFFFFF" stroke-width="2.8" stroke-linecap="square"/>
+                  {% endif %}
+                </svg>
+              </div>
+              <div class="ls-task-label {% if t.completed %}done{% endif %}">{{ t.title }}</div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+    <div class="ls-footer" data-action="nav:home" data-label="Back to Home">
+      <div class="ls-focus-label">DAILY FOCUS</div>
+      <div class="ls-focus-text serif">{{ settings.daily_focus or "Stay calm, stay focused, finish what matters." }}</div>
+      <div class="ls-meta-strip mono">KINDLEHERMES OS &middot; {{ weather.city | upper }} &middot; HIGH {{ weather.high }}&deg; / LOW {{ weather.low }}&deg; &middot; UPDATED {{ bundle.time_str }}</div>
+    </div>
+
+  {% elif screen == 'lockscreen_calendar' %}
+    <div class="ls-header">
+      <div class="ls-header-left">
+        <span class="ls-time mono">{{ bundle.time_str }}</span>
+        <span class="ls-date">{{ bundle.date_short }}</span>
+      </div>
+      <div class="ls-header-right">
+        <span class="pill pill-dark">CALENDAR SLIDE</span>
+      </div>
+    </div>
+    <div style="padding:32px 36px;height:1156px;overflow:hidden;">
+      <div class="ls-section-title">TODAY'S FULL SCHEDULE ({{ cal.today_count }} EVENTS)</div>
+      <div class="zone-box" style="padding:12px 22px;margin-bottom:28px;">
+        {% for ev in cal.all_today[:7] %}
+          <div class="event-row {% if ev.status == 'now' %}is-now{% elif ev.status == 'past' %}is-past{% endif %}">
+            <div class="event-time-col mono">{{ ev.time_range }}</div>
+            <div class="event-info-col">
+              <div class="event-title">
+                {% if ev.status == 'now' %}[NOW] {% elif ev.status == 'next' %}[NEXT] {% endif %}{{ ev.title }}
+              </div>
+              {% if ev.location %}<div class="event-loc">{{ ev.location }}</div>{% endif %}
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+      <div class="ls-section-title">TOMORROW</div>
+      <div class="zone-box" style="padding:12px 22px;">
+        {% for ev in cal.tomorrow_events[:4] %}
+          <div class="event-row">
+            <div class="event-time-col mono">{{ ev.time_range }}</div>
+            <div class="event-info-col">
+              <div class="event-title">{{ ev.title }}</div>
+              {% if ev.location %}<div class="event-loc">{{ ev.location }}</div>{% endif %}
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="ls-footer" data-action="nav:home" data-label="Back to Home">
+      <div class="ls-focus-label">WEATHER AT A GLANCE</div>
+      <div class="ls-focus-text">{{ weather.city }}: {{ weather.temp }}&deg;C &middot; {{ weather.condition }} &middot; {{ weather.rain_prob_6h }}% Rain (6h)</div>
+      <div class="ls-meta-strip mono">KINDLEHERMES LOCK SCREEN &middot; CALENDAR VIEW &middot; {{ bundle.time_str }}</div>
+    </div>
+
+  {% elif screen == 'lockscreen_planning' %}
+    <div class="ls-header">
+      <div class="ls-header-left">
+        <span class="ls-time mono">{{ bundle.time_str }}</span>
+        <span class="ls-date">{{ bundle.date_short }}</span>
+      </div>
+      <div class="ls-header-right">
+        <span class="pill pill-dark">PLANNING &amp; BRIEFING</span>
+      </div>
+    </div>
+    <div style="padding:32px 36px;height:1156px;overflow:hidden;">
+      <div class="zone-box" style="background:#EEEEEE;border-width:4px;">
+        <div class="ls-focus-label">TODAY'S NORTH STAR</div>
+        <div class="serif" style="font-size:36px;font-weight:700;line-height:1.25;">{{ settings.daily_focus }}</div>
+      </div>
+      <div class="ls-section-title">PRIORITY CHECKLIST</div>
+      <div style="margin-bottom:26px;">
+        {% for t in tasks[:5] %}
+          <div class="ls-task-item">
+            <div class="ls-task-box">
+              <svg width="30" height="30" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <rect x="2" y="2" width="20" height="20" fill="{{ '#000000' if t.completed else '#FFFFFF' }}" stroke="#000000" stroke-width="2.5"/>
+                {% if t.completed %}<path d="M6 12l4 4 8-8" fill="none" stroke="#FFFFFF" stroke-width="2.8"/>{% endif %}
+              </svg>
+            </div>
+            <div class="ls-task-label {% if t.completed %}done{% endif %}" style="font-size:26px;">{{ t.title }}</div>
+          </div>
+        {% endfor %}
+      </div>
+      <div class="ls-section-title">MORNING MARKET PULSE</div>
+      {% for item in briefing.market_pulse[:3] %}
+        <div style="margin-bottom:16px;">
+          <span class="pill pill-dark" style="font-size:15px;">{{ item.tag }}</span>
+          <span class="serif" style="font-size:24px;font-weight:700;margin-left:10px;">{{ item.title }}</span>
+        </div>
+      {% endfor %}
+    </div>
+    <div class="ls-footer" data-action="nav:home" data-label="Back to Home">
+      <div class="ls-focus-label">CONCEPT OF THE DAY &middot; {{ briefing.concept_of_day.term | upper }}</div>
+      <div class="serif" style="font-size:24px;line-height:1.3;">{{ briefing.concept_of_day.definition }}</div>
+      <div class="ls-meta-strip mono">KINDLEHERMES LOCK SCREEN &middot; PLANNING VIEW &middot; {{ bundle.time_str }}</div>
+    </div>
+
+  {% else %}
+    {# lockscreen_weather #}
+    <div class="ls-header">
+      <div class="ls-header-left">
+        <span class="ls-time mono">{{ bundle.time_str }}</span>
+        <span class="ls-date">{{ bundle.date_short }}</span>
+      </div>
+      <div class="ls-header-right">
+        <span class="pill pill-dark">{{ weather.city | upper }} WEATHER</span>
+      </div>
+    </div>
+    <div style="padding:32px 36px;height:1156px;overflow:hidden;">
+      <div class="weather-hero">
+        <div class="weather-hero-left">
+          <span style="display:inline-block;vertical-align:middle;">{{ weather.svg_lg | safe }}</span>
+          <span class="weather-temp-xl mono">{{ weather.temp }}&deg;C</span>
+        </div>
+        <div class="weather-hero-right">
+          <div style="font-size:34px;font-weight:800;">{{ weather.condition }}</div>
+          <div style="font-size:23px;color:#333333;margin-top:8px;">Feels like {{ weather.feels_like }}&deg; &middot; H:{{ weather.high }}&deg; L:{{ weather.low }}&deg;</div>
+          <div style="font-size:22px;color:#333333;margin-top:6px;">Rain (6h): {{ weather.rain_prob_6h }}% &middot; Wind: {{ weather.wind_kmh }} km/h</div>
+        </div>
+      </div>
+      <div class="ls-section-title">NEXT 8 HOURS</div>
+      <div class="zone-box" style="padding:12px 6px;margin-bottom:28px;">
+        <div class="hourly-table">
+          {% for h in weather.hourly[:8] %}
+            <div class="hourly-cell">
+              <div class="mono" style="font-size:20px;font-weight:700;margin-bottom:10px;">{{ h.hour_label }}</div>
+              <div>{{ h.svg | safe }}</div>
+              <div class="mono" style="font-size:26px;font-weight:800;margin-top:10px;">{{ h.temp }}&deg;</div>
+              <div style="font-size:18px;color:#444444;margin-top:4px;">{{ h.rain_prob }}%</div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="ls-section-title">5-DAY OUTLOOK</div>
+      <div class="zone-box" style="padding:8px 20px;">
+        {% for d in weather.daily[:5] %}
+          <div class="daily-row">
+            <div style="display:table-cell;width:130px;font-weight:800;">{{ d.day_label }}</div>
+            <div style="display:table-cell;width:60px;vertical-align:middle;">{{ d.svg | safe }}</div>
+            <div style="display:table-cell;">{{ d.condition }}</div>
+            <div style="display:table-cell;width:140px;text-align:right;color:#444444;">{{ d.rain_prob }}% rain</div>
+            <div class="mono" style="display:table-cell;width:160px;text-align:right;font-weight:800;">{{ d.high }}&deg; / {{ d.low }}&deg;</div>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="ls-footer" data-action="nav:home" data-label="Back to Home">
+      <div class="ls-focus-label">NEXT EVENT ON CALENDAR</div>
+      <div class="ls-focus-text serif">
+        {% if cal.current_event %}NOW: {{ cal.current_event.title }} ({{ cal.current_event.time_range }})
+        {% elif cal.next_event %}{{ cal.next_event.start_label }} — {{ cal.next_event.title }}
+        {% else %}Clear schedule for the rest of today.{% endif %}
+      </div>
+      <div class="ls-meta-strip mono">KINDLEHERMES LOCK SCREEN &middot; WEATHER VIEW &middot; {{ bundle.time_str }}</div>
+    </div>
+  {% endif %}
+
+{% else %}
+  {# ===================================================================== #}
+  {# INTERACTIVE HERMES OS ENVIRONMENT (1072x1448 with Top & Bottom Bars)  #}
+  {# ===================================================================== #}
+
+  <div class="topbar">
+    <div class="topbar-cell topbar-left">
+      {% if screen == 'home' %}
+        <span class="brand-mark">HERMES OS</span>
+      {% else %}
+        <button type="button" class="top-nav-btn" data-action="nav:home" data-label="Home">&larr; HOME</button>
+      {% endif %}
+    </div>
+    <div class="topbar-cell topbar-center">
+      <div class="top-clock mono">
+        {{ bundle.date_short }} &middot; {{ bundle.time_str }}
+        <span id="offline-pill" class="offline-pill">OFFLINE</span>
+      </div>
+      <div class="top-submeta">
+        {{ weather.svg_sm | safe }}
+        <span>{{ weather.city }} {{ weather.temp }}&deg;C &middot; {{ weather.condition }} &middot; {{ weather.rain_prob_6h }}% rain</span>
+      </div>
+    </div>
+    <div class="topbar-cell topbar-right">
+      <button type="button" class="top-nav-btn" data-action="sync:all" data-label="Sync">SYNC</button>
+    </div>
+  </div>
+
+  <div class="canvas">
+
+    {# -------------------- SCREEN: HOME (App Launcher Grid) -------------------- #}
+    {% if screen == 'home' %}
+      <div class="home-hero" data-action="nav:today" data-label="Open Today Dashboard">
+        <div class="home-hero-table">
+          <div class="home-hero-left">
+            {% if cal.current_event %}
+              <span class="pill pill-dark">&#9679; HAPPENING NOW &middot; {{ cal.current_event.remaining_label | upper }}</span>
+              <div class="home-hero-title serif">{{ cal.current_event.title }}</div>
+              <div class="home-hero-sub mono">{{ cal.current_event.time_range }}{% if cal.current_event.location %} &middot; {{ cal.current_event.location }}{% endif %}</div>
+            {% elif cal.next_event %}
+              <span class="pill pill-dark">NEXT UP &middot; {{ cal.next_event.starts_in_label | upper }}</span>
+              <div class="home-hero-title serif">{{ cal.next_event.title }}</div>
+              <div class="home-hero-sub mono">{{ cal.next_event.time_range }}{% if cal.next_event.location %} &middot; {{ cal.next_event.location }}{% endif %}</div>
+            {% else %}
+              <span class="pill">DAILY FOCUS</span>
+              <div class="home-hero-title serif">{{ settings.daily_focus }}</div>
+              <div class="home-hero-sub">Schedule clear for the rest of today</div>
+            {% endif %}
+          </div>
+          <div class="home-hero-right">
+            {% if pomo.is_running %}
+              <div class="pill pill-dark mono" style="font-size:22px;padding:10px 16px;">POMO {{ pomo.remaining_label }}</div>
+            {% else %}
+              <div class="pill" style="font-size:19px;padding:10px 16px;">OPEN TODAY &rarr;</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      <div class="app-grid">
+        {% for tile in tiles[:6] %}
+          <div class="app-tile {% if loop.index0 % 2 == 0 %}tile-left{% endif %}"
+               data-action="nav:{{ tile.id }}"
+               data-label="Open {{ tile.title }}">
+            <div class="tile-top">
+              <div class="tile-icon">{{ tile.icon_svg | safe }}</div>
+              <div class="tile-badge-wrap">
+                {% if tile.badge %}
+                  <span class="pill {% if tile.badge in ('LIVE', 'NOW') %}pill-dark{% endif %} mono">{{ tile.badge }}</span>
+                {% endif %}
+              </div>
+            </div>
+            <div class="tile-title">{{ tile.title }}</div>
+            <div class="tile-sub">{{ tile.subtitle }}</div>
+          </div>
+        {% endfor %}
+      </div>
+
+      <div class="home-focus-strip">
+        <span style="font-size:17px;font-weight:800;letter-spacing:2px;text-transform:uppercase;margin-right:12px;">FOCUS:</span>
+        <span class="serif" style="font-size:24px;font-weight:700;">{{ settings.daily_focus or "Stay calm, stay focused, finish what matters." }}</span>
+      </div>
+
+    {# -------------------- SCREEN: TODAY (Unified Dashboard) -------------------- #}
+    {% elif screen == 'today' %}
+      <div class="two-col" style="margin-bottom:18px;">
+        <div class="col-cell" style="width:530px;">
+          <div class="zone-box" style="height:426px;margin-bottom:0;overflow:hidden;">
+            <div class="zone-header">
+              <div class="zone-title">TODAY'S AGENDA</div>
+              <div class="zone-meta mono" data-action="nav:calendar" data-label="Full Calendar">FULL VIEW &rarr;</div>
+            </div>
+            {% set agenda_slice = [] %}
+            {% if cal.current_event %}{% set _ = agenda_slice.append(cal.current_event) %}{% endif %}
+            {% for ev in cal.upcoming_today[:3] %}{% set _ = agenda_slice.append(ev) %}{% endfor %}
+            {% if not agenda_slice %}{% set agenda_slice = cal.all_today[-3:] %}{% endif %}
+            {% for ev in agenda_slice[:4] %}
+              <div class="event-row {% if ev.status == 'now' %}is-now{% endif %}" style="padding:10px 10px;">
+                <div class="event-time-col mono" style="width:128px;font-size:20px;">{{ ev.start_label }}</div>
+                <div class="event-info-col">
+                  <div class="event-title" style="font-size:22px;">
+                    {% if ev.status == 'now' %}NOW: {% elif ev.status == 'next' %}NEXT: {% endif %}{{ ev.title }}
+                  </div>
+                  {% if ev.location %}<div class="event-loc" style="font-size:17px;">{{ ev.location }}</div>{% endif %}
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="col-gap"></div>
+
+        <div class="col-cell">
+          <div class="zone-box" style="height:426px;margin-bottom:0;overflow:hidden;">
+            <div class="zone-header">
+              <div class="zone-title">PRIORITIES</div>
+              <div class="zone-meta mono" data-action="nav:planner" data-label="Open Planner">ALL &rarr;</div>
+            </div>
+            {% for t in tasks[:3] %}
+              <div class="task-row {% if t.completed %}done{% endif %}"
+                   data-action="task:toggle:{{ t.id }}"
+                   data-label="Toggle {{ t.title }}">
+                <div class="task-check">
+                  <div class="checkbox-box">
+                    {% if t.completed %}
+                      <svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M5 12l5 5 9-9" fill="none" stroke="#FFFFFF" stroke-width="3"/></svg>
+                    {% endif %}
+                  </div>
+                </div>
+                <div class="task-text" style="font-size:21px;">{{ t.title }}</div>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <div class="zone-box" style="height:444px;margin-bottom:18px;overflow:hidden;cursor:pointer;" data-action="nav:briefing" data-label="Open Morning Briefing">
+        <div class="zone-header" style="margin-bottom:12px;">
+          <div class="zone-title">MORNING BRIEFING &middot; MARKET PULSE</div>
+          <div class="zone-meta mono">TAP TO READ FULL EDITION &rarr;</div>
+        </div>
+        {% for item in briefing.market_pulse[:3] %}
+          <div style="margin-bottom:12px;">
+            <span class="pill pill-dark" style="font-size:15px;padding:3px 9px;">{{ item.tag }}</span>
+            <span class="serif" style="font-size:23px;font-weight:700;margin-left:10px;">{{ item.title }}</span>
+            <div class="serif" style="font-size:19px;color:#333333;margin-top:3px;line-height:1.28;">{{ item.detail[:112] }}{% if item.detail|length > 112 %}...{% endif %}</div>
+          </div>
+        {% endfor %}
+        <div style="border-top:2px solid #000000;padding-top:10px;margin-top:10px;font-size:19px;line-height:1.3;">
+          <strong>CONCEPT:</strong> <span class="serif">{{ briefing.concept_of_day.term }} &mdash; {{ briefing.concept_of_day.definition }}</span>
+        </div>
+      </div>
+
+      <div class="two-col">
+        <div class="col-cell" style="width:497px;">
+          <div class="zone-box" style="height:290px;margin-bottom:0;padding:16px 22px;">
+            <div class="zone-header" style="margin-bottom:10px;">
+              <div class="zone-title">POMODORO</div>
+              <div class="zone-meta mono">{{ pomo.mode_label | upper }}</div>
+            </div>
+            <div style="display:table;width:100%;margin-bottom:8px;">
+              <div class="mono" style="display:table-cell;font-size:58px;font-weight:800;line-height:1;" data-action="nav:pomodoro" data-label="Open Pomodoro">
+                {{ pomo.remaining_label }}
+              </div>
+              <div style="display:table-cell;text-align:right;vertical-align:middle;">
+                <span class="pill {% if pomo.is_running %}pill-dark{% endif %}">{{ pomo.status | upper }}</span>
+              </div>
+            </div>
+            <div class="seg-bar" style="margin:10px 0 14px;">
+              {% for i in range(pomo.segments_total) %}
+                <div class="seg-cell {% if i < pomo.segments_filled %}filled{% endif %}" style="height:20px;"></div>
+              {% endfor %}
+            </div>
+            <div class="btn-row" style="margin-bottom:0;">
+              <div class="btn-row-cell">
+                <button type="button" class="big-btn {% if pomo.is_running %}btn-solid{% endif %}" style="height:76px;line-height:70px;font-size:21px;" data-action="pomo:toggle" data-label="Start or Pause Pomodoro">
+                  {% if pomo.is_running %}PAUSE{% else %}START{% endif %}
+                </button>
+              </div>
+              <div class="btn-row-cell">
+                <button type="button" class="big-btn" style="height:76px;line-height:70px;font-size:21px;" data-action="pomo:reset" data-label="Reset Pomodoro">RESET</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-gap"></div>
+
+        <div class="col-cell">
+          <div class="zone-box" style="height:290px;margin-bottom:0;padding:16px 22px;cursor:pointer;" data-action="nav:weather" data-label="Open Weather">
+            <div class="zone-header" style="margin-bottom:12px;">
+              <div class="zone-title">WEATHER &amp; FOCUS</div>
+              <div class="zone-meta mono">{{ weather.city | upper }}</div>
+            </div>
+            <div style="display:table;width:100%;margin-bottom:14px;">
+              <div style="display:table-cell;vertical-align:middle;width:82px;">{{ weather.svg_lg | safe }}</div>
+              <div style="display:table-cell;vertical-align:middle;padding-left:10px;">
+                <div class="mono" style="font-size:42px;font-weight:800;line-height:1;">{{ weather.temp }}&deg;C</div>
+                <div style="font-size:20px;margin-top:4px;">{{ weather.condition }} &middot; {{ weather.rain_prob_6h }}% rain</div>
+              </div>
+            </div>
+            <div style="border-top:2px solid #000000;padding-top:10px;">
+              <div style="font-size:16px;font-weight:800;letter-spacing:1.5px;color:#444444;">DAILY FOCUS</div>
+              <div class="serif" style="font-size:21px;font-weight:700;line-height:1.25;margin-top:4px;">{{ settings.daily_focus[:78] }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    {# -------------------- SCREEN: CALENDAR -------------------- #}
+    {% elif screen == 'calendar' or screen == 'calendar_tomorrow' %}
+      {% set show_tomorrow = (screen == 'calendar_tomorrow') %}
+      <div class="btn-row" style="margin-bottom:22px;">
+        <div class="btn-row-cell">
+          <button type="button" class="big-btn {% if not show_tomorrow %}btn-solid{% endif %}" style="height:80px;line-height:74px;font-size:22px;" data-action="nav:calendar" data-label="Today Schedule">
+            TODAY ({{ cal.today_count }})
+          </button>
+        </div>
+        <div class="btn-row-cell">
+          <button type="button" class="big-btn {% if show_tomorrow %}btn-solid{% endif %}" style="height:80px;line-height:74px;font-size:22px;" data-action="nav:calendar_tomorrow" data-label="Tomorrow Schedule">
+            TOMORROW ({{ cal.tomorrow_events | length }})
+          </button>
+        </div>
+      </div>
+
+      {% if not show_tomorrow and cal.current_event %}
+        <div class="ls-hero-card" style="margin-bottom:22px;">
+          <div class="ls-hero-banner">
+            <span style="display:table-cell;text-align:left;">&#9679; HAPPENING NOW</span>
+            <span class="mono" style="display:table-cell;text-align:right;">{{ cal.current_event.remaining_label | upper }}</span>
+          </div>
+          <div style="padding:18px 22px;">
+            <div class="serif" style="font-size:34px;font-weight:700;">{{ cal.current_event.title }}</div>
+            <div class="mono" style="font-size:24px;font-weight:800;margin-top:8px;">
+              {{ cal.current_event.time_range }}{% if cal.current_event.location %} &middot; {{ cal.current_event.location }}{% endif %}
+            </div>
+          </div>
+        </div>
+      {% endif %}
+
+      <div class="zone-box" style="min-height:840px;">
+        <div class="zone-header">
+          <div class="zone-title">{% if show_tomorrow %}TOMORROW'S AGENDA{% else %}TODAY'S TIMELINE{% endif %}</div>
+          <div class="zone-meta mono">SOURCE: {{ cal.source | upper }}</div>
+        </div>
+        {% set ev_list = cal.tomorrow_events if show_tomorrow else cal.all_today %}
+        {% if ev_list %}
+          {% for ev in ev_list[:9] %}
+            <div class="event-row {% if ev.status == 'now' %}is-now{% elif ev.status == 'past' %}is-past{% endif %}">
+              <div class="event-time-col mono">{{ ev.time_range }}</div>
+              <div class="event-info-col">
+                <div class="event-title">
+                  {% if ev.status == 'now' %}<span class="pill" style="margin-right:8px;">NOW</span>{% elif ev.status == 'next' %}<span class="pill pill-dark" style="margin-right:8px;">NEXT UP</span>{% endif %}
+                  {{ ev.title }}
+                </div>
+                {% if ev.location %}<div class="event-loc">{{ ev.location }}</div>{% endif %}
+              </div>
+            </div>
+          {% endfor %}
+        {% else %}
+          <div style="font-size:26px;padding:30px 0;color:#444444;">No events scheduled for this day.</div>
+        {% endif %}
+      </div>
+
+    {# -------------------- SCREEN: PLANNER -------------------- #}
+    {% elif screen == 'planner' %}
+      <div class="zone-box" style="background:#EEEEEE;border-width:4px;">
+        <div style="font-size:18px;font-weight:800;letter-spacing:2px;margin-bottom:8px;">TODAY'S DAILY FOCUS</div>
+        <div class="serif" style="font-size:34px;font-weight:700;line-height:1.25;">{{ settings.daily_focus }}</div>
+      </div>
+
+      <div class="zone-box" style="min-height:860px;">
+        <div class="zone-header">
+          <div class="zone-title">INTERACTIVE CHECKLIST (TAP TO TOGGLE)</div>
+          <div class="zone-meta mono">{{ tasks | selectattr('completed') | list | length }} / {{ tasks | length }} DONE</div>
+        </div>
+        {% if tasks %}
+          {% for t in tasks[:7] %}
+            <div class="task-row {% if t.completed %}done{% endif %}"
+                 data-action="task:toggle:{{ t.id }}"
+                 data-label="Toggle {{ t.title }}">
+              <div class="task-check">
+                <div class="checkbox-box">
+                  {% if t.completed %}
+                    <svg width="26" height="26" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M5 12l5 5 9-9" fill="none" stroke="#FFFFFF" stroke-width="3"/></svg>
+                  {% endif %}
+                </div>
+              </div>
+              <div class="task-text">{{ t.title }}</div>
+              <div class="task-prio"><span class="pill mono">P{{ t.priority }}</span></div>
+            </div>
+          {% endfor %}
+        {% else %}
+          <div style="font-size:26px;padding:32px 0;color:#444444;">No tasks yet. Add tasks from your iPhone, Mac, or Windows companion app (/app).</div>
+        {% endif %}
+      </div>
+
+      <div class="btn-row">
+        <div class="btn-row-cell">
+          <button type="button" class="big-btn" style="height:80px;line-height:74px;font-size:22px;" data-action="task:clear_done" data-label="Clear Completed Tasks">
+            CLEAR COMPLETED
+          </button>
+        </div>
+        <div class="btn-row-cell">
+          <button type="button" class="big-btn" style="height:80px;line-height:74px;font-size:22px;" data-action="sync:all" data-label="Sync Tasks">
+            SYNC WITH DEVICES
+          </button>
+        </div>
+      </div>
+
+    {# -------------------- SCREEN: POMODORO -------------------- #}
+    {% elif screen == 'pomodoro' %}
+      <div class="pomo-stage">
+        <div>
+          <span class="pill {% if pomo.is_running %}pill-dark{% endif %} mono" style="font-size:22px;padding:8px 20px;">
+            {{ pomo.mode_label | upper }} &middot; {{ pomo.status | upper }}
+          </span>
+        </div>
+        <div class="pomo-big-time mono">{{ pomo.remaining_label }}</div>
+        <div class="pomo-status-line">
+          {% if pomo.status == 'completed' %}
+            SESSION COMPLETE &mdash; TAKE A BREATH
+          {% elif pomo.is_running %}
+            E-INK MINUTE REFRESH ACTIVE
+          {% else %}
+            {{ pomo.completed_sessions }} FOCUS SESSIONS COMPLETED TODAY
+          {% endif %}
+        </div>
+        <div class="seg-bar">
+          {% for i in range(pomo.segments_total) %}
+            <div class="seg-cell {% if i < pomo.segments_filled %}filled{% endif %}"></div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <div class="btn-row-cell">
+          <button type="button" class="big-btn {% if pomo.is_running %}btn-solid{% endif %}" data-action="pomo:toggle" data-label="Start or Pause Pomodoro">
+            {% if pomo.is_running %}PAUSE TIMER{% else %}START FOCUS{% endif %}
+          </button>
+        </div>
+        <div class="btn-row-cell">
+          <button type="button" class="big-btn" data-action="pomo:reset" data-label="Reset Pomodoro">
+            RESET
+          </button>
+        </div>
+      </div>
+
+      <div class="zone-box" style="margin-top:24px;">
+        <div class="zone-header">
+          <div class="zone-title">SWITCH MODE</div>
+          <div class="zone-meta mono">SERVER SYNCED</div>
+        </div>
+        <div class="btn-row" style="margin-bottom:0;">
+          <div class="btn-row-cell">
+            <button type="button" class="big-btn {% if pomo.mode == 'focus' %}btn-solid{% endif %}" style="height:84px;line-height:78px;font-size:22px;" data-action="pomo:mode:focus" data-label="25m Focus Mode">25M FOCUS</button>
+          </div>
+          <div class="btn-row-cell">
+            <button type="button" class="big-btn {% if pomo.mode == 'short_break' %}btn-solid{% endif %}" style="height:84px;line-height:78px;font-size:22px;" data-action="pomo:mode:short_break" data-label="5m Break Mode">5M BREAK</button>
+          </div>
+          <div class="btn-row-cell">
+            <button type="button" class="big-btn {% if pomo.mode == 'long_break' %}btn-solid{% endif %}" style="height:84px;line-height:78px;font-size:22px;" data-action="pomo:mode:long_break" data-label="15m Rest Mode">15M REST</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="zone-box" style="background:#EEEEEE;">
+        <div style="font-size:18px;font-weight:800;letter-spacing:1.5px;margin-bottom:6px;">ACTIVE FOCUS TARGET</div>
+        <div class="serif" style="font-size:26px;font-weight:700;">{{ settings.daily_focus }}</div>
+      </div>
+
+    {# -------------------- SCREEN: WEATHER -------------------- #}
+    {% elif screen == 'weather' %}
+      <div class="weather-hero">
+        <div class="weather-hero-left">
+          <span style="display:inline-block;vertical-align:middle;">{{ weather.svg_lg | safe }}</span>
+          <span class="weather-temp-xl mono">{{ weather.temp }}&deg;C</span>
+        </div>
+        <div class="weather-hero-right">
+          <div style="font-size:36px;font-weight:800;">{{ weather.city }}</div>
+          <div style="font-size:26px;margin-top:6px;">{{ weather.condition }}</div>
+          <div style="font-size:21px;color:#333333;margin-top:8px;">
+            Feels {{ weather.feels_like }}&deg; &middot; H:{{ weather.high }}&deg; L:{{ weather.low }}&deg; &middot; Wind {{ weather.wind_kmh }} km/h
+          </div>
+          <div style="font-size:21px;color:#333333;margin-top:4px;">
+            6h Rain Prob: <strong>{{ weather.rain_prob_6h }}%</strong> &middot; Humidity: {{ weather.humidity }}%
+          </div>
+        </div>
+      </div>
+
+      <div class="zone-box">
+        <div class="zone-header">
+          <div class="zone-title">NEXT 8 HOURS</div>
+          <div class="zone-meta mono">{{ weather.source | upper }}</div>
+        </div>
+        <div class="hourly-table">
+          {% for h in weather.hourly[:8] %}
+            <div class="hourly-cell">
+              <div class="mono" style="font-size:20px;font-weight:700;margin-bottom:10px;">{{ h.hour_label }}</div>
+              <div>{{ h.svg | safe }}</div>
+              <div class="mono" style="font-size:26px;font-weight:800;margin-top:10px;">{{ h.temp }}&deg;</div>
+              <div style="font-size:18px;color:#444444;margin-top:4px;">{{ h.rain_prob }}%</div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="zone-box">
+        <div class="zone-header">
+          <div class="zone-title">5-DAY FORECAST</div>
+          <div class="zone-meta mono">HIGH / LOW</div>
+        </div>
+        {% for d in weather.daily[:5] %}
+          <div class="daily-row">
+            <div style="display:table-cell;width:130px;font-weight:800;">{{ d.day_label }}</div>
+            <div style="display:table-cell;width:60px;vertical-align:middle;">{{ d.svg | safe }}</div>
+            <div style="display:table-cell;">{{ d.condition }}</div>
+            <div style="display:table-cell;width:140px;text-align:right;color:#444444;">{{ d.rain_prob }}% rain</div>
+            <div class="mono" style="display:table-cell;width:160px;text-align:right;font-weight:800;">{{ d.high }}&deg; / {{ d.low }}&deg;</div>
+          </div>
+        {% endfor %}
+      </div>
+
+    {# -------------------- SCREEN: BRIEFING (Morning Newspaper) -------------------- #}
+    {% elif screen == 'briefing' %}
+      <div class="masthead">
+        <div style="display:table-cell;vertical-align:middle;">
+          <div class="masthead-title serif">THE HERMES EDITION</div>
+          <div class="mono" style="font-size:19px;margin-top:4px;">{{ briefing.edition | upper }} &middot; SOURCE: {{ briefing.source | upper }}</div>
+        </div>
+        <div style="display:table-cell;vertical-align:middle;text-align:right;width:240px;">
+          <button type="button" class="btn-inline" data-action="briefing:refresh" data-label="Refresh Briefing">REFRESH</button>
+        </div>
+      </div>
+
+      <div class="serif" style="font-size:38px;font-weight:700;line-height:1.18;margin-bottom:20px;">
+        {{ briefing.headline }}
+      </div>
+
+      <div style="border-top:3px solid #000000;border-bottom:3px solid #000000;padding:4px 0;">
+        {% for story in briefing.market_pulse[:3] %}
+          <div class="briefing-story">
+            <div><span class="pill pill-dark">{{ story.tag }}</span></div>
+            <div class="story-title serif">{{ story.title }}</div>
+            <div class="story-detail serif">{{ story.detail }}</div>
+          </div>
+        {% endfor %}
+      </div>
+
+      <div class="concept-box">
+        <div style="font-size:18px;font-weight:800;letter-spacing:2px;margin-bottom:8px;">CONCEPT OF THE DAY</div>
+        <div class="serif" style="font-size:30px;font-weight:700;margin-bottom:6px;">{{ briefing.concept_of_day.term }}</div>
+        <div class="serif" style="font-size:23px;line-height:1.38;">{{ briefing.concept_of_day.definition }}</div>
+      </div>
+
+      {% if briefing.reading_note %}
+        <div class="serif" style="font-size:21px;font-style:italic;color:#333333;margin-top:18px;">
+          &ldquo;{{ briefing.reading_note }}&rdquo;
+        </div>
+      {% endif %}
+    {% endif %}
+
+  </div>
+
+  {# ---------- Persistent Bottom OS Navigation Dock ---------- #}
+  <div class="bottombar">
+    <div class="dock-item {% if screen == 'home' %}active{% endif %}" data-action="nav:home" data-label="Home">HOME</div>
+    <div class="dock-item {% if screen == 'today' %}active{% endif %}" data-action="nav:today" data-label="Today">TODAY</div>
+    <div class="dock-item {% if screen in ('calendar', 'calendar_tomorrow') %}active{% endif %}" data-action="nav:calendar" data-label="Calendar">CALENDAR</div>
+    <div class="dock-item {% if screen == 'planner' %}active{% endif %}" data-action="nav:planner" data-label="Planner">PLANNER</div>
+    <div class="dock-item {% if screen == 'pomodoro' %}active{% endif %}" data-action="nav:pomodoro" data-label="Pomodoro">POMO</div>
+    <div class="dock-item dock-exit" data-action="system:exit" data-label="Return to Kindle">EXIT</div>
+  </div>
+{% endif %}
+
+</div>
+{% if not inline_css %}
+<script src="/static/kindle.js"></script>
+{% endif %}
+</body>
+</html>
