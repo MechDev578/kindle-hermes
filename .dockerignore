@@ -1,0 +1,11 @@
+.venv/
+.env
+.git/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+backend/data/
+kindle_client/
+kindle_scripts/
+tests/
