@@ -33,12 +33,14 @@ from backend.services.renderer_svc import renderer
 
 
 def _detect_host_iana_timezone() -> str:
-    """Detect local macOS/Linux IANA timezone from /etc/localtime symlink if available."""
+    """Detect local macOS/Linux IANA timezone from /etc/localtime symlink (ignoring container UTC defaults)."""
     try:
         target = str(Path("/etc/localtime").resolve())
         marker = "zoneinfo/"
         if marker in target:
             tz_name = target.split(marker, 1)[1].strip()
+            if tz_name in ("UTC", "Etc/UTC", "Etc/GMT", "GMT", "Universal", "UCT"):
+                return ""
             ZoneInfo(tz_name)
             return tz_name
     except Exception:
@@ -50,7 +52,7 @@ def _detect_host_iana_timezone() -> str:
 async def lifespan(app: FastAPI):
     db.init_schema()
     settings = db.get_all_settings()
-    if settings.get("auto_sync_location", True):
+    if settings.get("auto_sync_location", True) and settings.get("location_source", "default") == "default":
         host_tz = _detect_host_iana_timezone()
         if host_tz and host_tz != settings.get("timezone"):
             db.update_settings({"timezone": host_tz})
