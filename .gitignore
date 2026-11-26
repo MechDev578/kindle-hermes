@@ -1,11 +1,24 @@
 .venv/
 __pycache__/
 *.pyc
-.env
-backend/data/*.db
-backend/data/*.db-wal
-backend/data/*.db-shm
-backend/data/*.png
 .pytest_cache/
 .DS_Store
+._*
+
+# Secrets, local config, databases & runtime logs (NEVER commit)
+.env
+.env.*
+!.env.example
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.log
+config.json
+outbox.json
+backend/data/
+cache/
+
+# Compiled ARMv7 Kindle binary (rebuild with ./kindle_client/build_arm.sh)
 kindle_client/hermes-client-arm

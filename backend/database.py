@@ -17,7 +17,7 @@ DEFAULT_MODULES = ["today", "calendar", "planner", "pomodoro", "weather", "brief
 DEFAULT_LOCKSCREEN_SLIDES = ["smart", "calendar", "planning", "weather"]
 
 DEFAULT_TASKS = [
-    ("Ship KindleHermes v1 dashboard & lock screen", 0, 1),
+    ("Review project milestones & daily plan", 0, 1),
     ("Review weekly calendar and time-block deep work", 1, 1),
     ("Read 30 pages on Paperwhite before bed", 0, 2),
     ("Evening walk & mobility stretch", 0, 2),

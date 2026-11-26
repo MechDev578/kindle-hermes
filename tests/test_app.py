@@ -175,18 +175,18 @@ def test_location_and_timezone_sync(client: TestClient):
     resp = client.post(
         "/api/location/sync",
         json={
-            "lat": 48.1351,
-            "lon": 11.5820,
-            "city": "Munich",
-            "timezone": "Europe/Berlin",
+            "lat": 47.3769,
+            "lon": 8.5417,
+            "city": "Zurich",
+            "timezone": "Europe/Zurich",
             "source": "macbook-gps",
         },
     )
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
-    assert body["settings"]["weather_city"] == "Munich"
-    assert body["settings"]["timezone"] == "Europe/Berlin"
+    assert body["settings"]["weather_city"] == "Zurich"
+    assert body["settings"]["timezone"] == "Europe/Zurich"
     assert body["settings"]["location_source"] == "macbook-gps"
 
 
@@ -199,7 +199,7 @@ def test_google_calendar_oauth_setup_and_event_parsing(client: TestClient):
 
     saved = client.post(
         "/api/google/credentials",
-        json={"client_id": "123456-test.apps.googleusercontent.com", "client_secret": "GOCSPX-testsecret"},
+        json={"client_id": "123456-test.apps.googleusercontent.com", "client_secret": "example-oauth-client-secret"},
     )
     assert saved.status_code == 200
     assert saved.json()["has_credentials"] is True
@@ -320,3 +320,23 @@ def test_offline_bundle_and_batch_sync(client: TestClient):
         for slot in slots:
             assert slot["file"] in names
             assert slot["end_unix"] > slot["start_unix"]
+
+
+def test_security_headers_and_login_rate_limiting(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    import backend.auth as auth_module
+
+    auth_module.reset_login_rate_limits()
+    resp = client.get("/api/health")
+    assert resp.headers.get("x-content-type-options") == "nosniff"
+    assert resp.headers.get("referrer-policy") == "no-referrer"
+    assert resp.headers.get("x-frame-options") == "SAMEORIGIN"
+
+    # Simulate token protection enabled and verify brute-force lockout after 10 failures
+    monkeypatch.setattr(main_module, "verify_token", lambda tok: tok == "super-secret-pin")
+    for _ in range(10):
+        r = client.post("/api/auth/login", json={"token": "wrong-pin"})
+        assert r.status_code == 401
+    blocked = client.post("/api/auth/login", json={"token": "super-secret-pin"})
+    assert blocked.status_code == 429
+    assert "retry-after" in blocked.headers
+    auth_module.reset_login_rate_limits()

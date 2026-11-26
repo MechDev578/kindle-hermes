@@ -18,7 +18,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from backend.auth import is_auth_enabled, require_auth, verify_token
+from backend.auth import (
+    check_login_rate_limit,
+    client_ip,
+    is_auth_enabled,
+    record_login_attempt,
+    require_auth,
+    verify_token,
+)
 from backend.config import DEVICE_NAME, KINDLE_HEIGHT, KINDLE_PPI, KINDLE_WIDTH, STATIC_DIR, TEMPLATES_DIR
 from backend.database import db
 from backend.modules.registry import (
@@ -62,10 +69,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="KindleHermes OS",
-    version="1.0.0",
-    description="Modular e-ink OS, context-aware lock screen, and cross-device web companion for Kindle Paperwhite 10th Gen.",
+    version="2.1.0",
+    description="Offline-first modular e-ink OS, time-sliced Smart Lock Screen engine, and cross-device web companion for Kindle Paperwhite 10th Gen.",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=()")
+    return response
+
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -257,13 +275,22 @@ async def auth_status(request: Request):
 
 
 @app.post("/api/auth/login")
-async def auth_login(payload: LoginPayload, response: Response):
+async def auth_login(payload: LoginPayload, request: Request, response: Response):
+    ip = client_ip(request)
+    check_login_rate_limit(ip)
     if not verify_token(payload.token.strip()):
+        record_login_attempt(ip, success=False)
         raise HTTPException(status_code=401, detail="Invalid PIN / access token")
+    record_login_attempt(ip, success=True)
+    is_https = (
+        request.url.scheme == "https"
+        or request.headers.get("x-forwarded-proto", "").lower() == "https"
+    )
     response.set_cookie(
         key="hermes_token",
         value=payload.token.strip(),
         httponly=True,
+        secure=is_https,
         samesite="lax",
         max_age=60 * 60 * 24 * 30,
     )

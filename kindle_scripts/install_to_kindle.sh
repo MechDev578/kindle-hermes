@@ -4,7 +4,7 @@
 #   - Modern SpiderCat / hdnext Scriptlets (1-tap icons right in /Volumes/Kindle/documents/!)
 #   - Legacy KUAL extensions (automatically mirrored if /Volumes/Kindle/extensions/ exists)
 #
-# Usage: ./kindle_scripts/install_to_kindle.sh http://10.173.131.58:8000 [OPTIONAL_HERMES_TOKEN]
+# Usage: ./kindle_scripts/install_to_kindle.sh https://your-app.up.railway.app YOUR_PIN [http://192.168.1.50:8000]
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
