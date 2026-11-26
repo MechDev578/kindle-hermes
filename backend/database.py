@@ -13,7 +13,7 @@ from typing import Any, Iterator
 
 from backend.config import DB_PATH, config
 
-DEFAULT_MODULES = ["today", "calendar", "planner", "pomodoro", "weather", "briefing"]
+DEFAULT_MODULES = ["today", "calendar", "planner", "pomodoro", "weather", "briefing", "deutsch"]
 DEFAULT_LOCKSCREEN_SLIDES = ["smart", "calendar", "planning", "weather"]
 
 DEFAULT_TASKS = [
@@ -96,6 +96,79 @@ class HermesDB:
                     selected_ids_json TEXT NOT NULL DEFAULT '[]',
                     updated_at REAL NOT NULL DEFAULT 0
                 );
+
+                CREATE TABLE IF NOT EXISTS german_cards (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slug TEXT UNIQUE NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'cloze',
+                    cefr TEXT NOT NULL DEFAULT 'A2',
+                    category TEXT NOT NULL DEFAULT 'Chunk',
+                    prompt_de TEXT NOT NULL,
+                    answer_de TEXT NOT NULL,
+                    full_de TEXT NOT NULL,
+                    hint_en TEXT NOT NULL DEFAULT '',
+                    translation_en TEXT NOT NULL DEFAULT '',
+                    rule_note TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT 'seed',
+                    stability REAL NOT NULL DEFAULT 0.0,
+                    difficulty REAL NOT NULL DEFAULT 5.0,
+                    reps INTEGER NOT NULL DEFAULT 0,
+                    lapses INTEGER NOT NULL DEFAULT 0,
+                    state TEXT NOT NULL DEFAULT 'new',
+                    due_at REAL NOT NULL DEFAULT 0.0,
+                    last_review_at REAL NOT NULL DEFAULT 0.0,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS german_classics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slug TEXT UNIQUE NOT NULL,
+                    author TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    year TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL DEFAULT 'Rede',
+                    cefr TEXT NOT NULL DEFAULT 'B2',
+                    famous_line TEXT NOT NULL DEFAULT '',
+                    conversation_tip TEXT NOT NULL DEFAULT '',
+                    paragraphs_json TEXT NOT NULL DEFAULT '[]',
+                    glosses_json TEXT NOT NULL DEFAULT '[]',
+                    xray_json TEXT NOT NULL DEFAULT '[]',
+                    mine_cards_json TEXT NOT NULL DEFAULT '[]',
+                    word_count INTEGER NOT NULL DEFAULT 60,
+                    read_count INTEGER NOT NULL DEFAULT 0,
+                    mined INTEGER NOT NULL DEFAULT 0,
+                    last_read_at REAL NOT NULL DEFAULT 0.0,
+                    is_custom INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS german_daily_cache (
+                    date_key TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    read_done INTEGER NOT NULL DEFAULT 0,
+                    quiz_answered INTEGER NOT NULL DEFAULT -1,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS german_activity (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    day_key TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    correct INTEGER NOT NULL DEFAULT 1,
+                    words_count INTEGER NOT NULL DEFAULT 0,
+                    points INTEGER NOT NULL DEFAULT 0,
+                    detail TEXT NOT NULL DEFAULT '',
+                    created_at REAL NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS german_writing_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    prompt_chunks TEXT NOT NULL DEFAULT '',
+                    user_text TEXT NOT NULL,
+                    recast_de TEXT NOT NULL,
+                    feedback_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
                 """
             )
 
@@ -120,12 +193,31 @@ class HermesDB:
                 "lockscreen_slides": json.dumps(DEFAULT_LOCKSCREEN_SLIDES),
                 "lockscreen_cycle_index": "0",
                 "enabled_modules": json.dumps(DEFAULT_MODULES),
+                "german_level": "A2",
+                "german_daily_goal": "15",
+                "german_active_classic": "0",
+                "german_active_root": "0",
+                "german_drill_flipped": "0",
+                "german_drill_choice": "",
             }
             for k, v in default_settings.items():
                 conn.execute(
                     "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                     (k, v),
                 )
+
+            # Smooth upgrade for existing DBs that still have the exact v2.1 default module list
+            row_mod = conn.execute("SELECT value FROM settings WHERE key = 'enabled_modules'").fetchone()
+            if row_mod:
+                try:
+                    mods = json.loads(row_mod["value"])
+                    if mods == ["today", "calendar", "planner", "pomodoro", "weather", "briefing"]:
+                        conn.execute(
+                            "UPDATE settings SET value = ? WHERE key = 'enabled_modules'",
+                            (json.dumps(DEFAULT_MODULES),),
+                        )
+                except Exception:
+                    pass
 
             # Seed initial tasks if table is empty
             row = conn.execute("SELECT COUNT(*) AS cnt FROM tasks").fetchone()
@@ -175,6 +267,12 @@ class HermesDB:
             "enabled_modules": self._parse_json_list(
                 raw.get("enabled_modules"), DEFAULT_MODULES
             ),
+            "german_level": raw.get("german_level", "A2"),
+            "german_daily_goal": int(raw.get("german_daily_goal", "15")),
+            "german_active_classic": int(raw.get("german_active_classic", "0")),
+            "german_active_root": int(raw.get("german_active_root", "0")),
+            "german_drill_flipped": raw.get("german_drill_flipped", "0") == "1",
+            "german_drill_choice": raw.get("german_drill_choice", ""),
         }
 
     def update_settings(self, updates: dict[str, Any]) -> dict[str, Any]:
@@ -193,12 +291,20 @@ class HermesDB:
             "lockscreen_slides",
             "lockscreen_cycle_index",
             "enabled_modules",
+            "german_level",
+            "german_daily_goal",
+            "german_active_classic",
+            "german_active_root",
+            "german_drill_flipped",
+            "german_drill_choice",
         }
         with self._conn() as conn:
             for key, val in updates.items():
                 if key not in allowed or val is None:
                     continue
-                if isinstance(val, bool):
+                if key == "german_drill_flipped":
+                    serialized = "1" if bool(val) else "0"
+                elif isinstance(val, bool):
                     serialized = "true" if val else "false"
                 elif isinstance(val, (list, dict)):
                     serialized = json.dumps(val)
@@ -465,6 +571,316 @@ class HermesDB:
                 (time.time(),),
             )
         return self.get_google_oauth()
+
+    # ---------- Hermes Deutsch (A2 -> C2 FSRS, Classics, Daily Reader & Output) ----------
+
+    def seed_german_cards(self, cards: list[dict[str, Any]]) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            for c in cards:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO german_cards
+                        (slug, kind, cefr, category, prompt_de, answer_de, full_de,
+                         hint_en, translation_en, rule_note, source, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        c["slug"],
+                        c.get("kind", "cloze"),
+                        c.get("cefr", "A2"),
+                        c.get("category", "Chunk"),
+                        c["prompt_de"],
+                        c["answer_de"],
+                        c["full_de"],
+                        c.get("hint_en", ""),
+                        c.get("translation_en", ""),
+                        c.get("rule_note", ""),
+                        c.get("source", "seed"),
+                        now_iso,
+                    ),
+                )
+
+    def seed_german_classics(self, classics: list[dict[str, Any]]) -> None:
+        with self._conn() as conn:
+            for item in classics:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO german_classics
+                        (slug, author, title, year, category, cefr, famous_line,
+                         conversation_tip, paragraphs_json, glosses_json, xray_json,
+                         mine_cards_json, word_count, is_custom)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        item["slug"],
+                        item["author"],
+                        item["title"],
+                        item.get("year", ""),
+                        item.get("category", "Rede"),
+                        item.get("cefr", "B2"),
+                        item.get("famous_line", ""),
+                        item.get("conversation_tip", ""),
+                        json.dumps(item.get("paragraphs", []), ensure_ascii=False),
+                        json.dumps(item.get("glosses", []), ensure_ascii=False),
+                        json.dumps(item.get("xray", []), ensure_ascii=False),
+                        json.dumps(item.get("mine_cards", []), ensure_ascii=False),
+                        int(item.get("word_count", 60)),
+                        int(item.get("is_custom", 0)),
+                    ),
+                )
+
+    def list_german_cards(self) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM german_cards ORDER BY CASE state WHEN 'learning' THEN 0 WHEN 'review' THEN 1 ELSE 2 END, due_at ASC, id ASC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_german_card(self, card_id: int) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            r = conn.execute("SELECT * FROM german_cards WHERE id = ?", (card_id,)).fetchone()
+        return dict(r) if r else None
+
+    def upsert_german_card(self, card: dict[str, Any]) -> dict[str, Any]:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO german_cards
+                    (slug, kind, cefr, category, prompt_de, answer_de, full_de,
+                     hint_en, translation_en, rule_note, source, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(slug) DO UPDATE SET
+                    prompt_de = excluded.prompt_de,
+                    answer_de = excluded.answer_de,
+                    full_de = excluded.full_de,
+                    hint_en = excluded.hint_en,
+                    translation_en = excluded.translation_en,
+                    rule_note = excluded.rule_note
+                """,
+                (
+                    card["slug"],
+                    card.get("kind", "cloze"),
+                    card.get("cefr", "B1"),
+                    card.get("category", "Chunk"),
+                    card["prompt_de"],
+                    card["answer_de"],
+                    card["full_de"],
+                    card.get("hint_en", ""),
+                    card.get("translation_en", ""),
+                    card.get("rule_note", ""),
+                    card.get("source", "custom"),
+                    now_iso,
+                ),
+            )
+            r = conn.execute("SELECT * FROM german_cards WHERE slug = ?", (card["slug"],)).fetchone()
+        return dict(r)
+
+    def update_german_card_srs(
+        self,
+        card_id: int,
+        *,
+        stability: float,
+        difficulty: float,
+        reps: int,
+        lapses: int,
+        state: str,
+        due_at: float,
+        last_review_at: float,
+    ) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE german_cards
+                SET stability = ?, difficulty = ?, reps = ?, lapses = ?,
+                    state = ?, due_at = ?, last_review_at = ?
+                WHERE id = ?
+                """,
+                (stability, difficulty, reps, lapses, state, due_at, last_review_at, card_id),
+            )
+            r = conn.execute("SELECT * FROM german_cards WHERE id = ?", (card_id,)).fetchone()
+        return dict(r) if r else None
+
+    def delete_german_card(self, card_id: int) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM german_cards WHERE id = ?", (card_id,))
+            return cur.rowcount > 0
+
+    def _hydrate_classic(self, r: sqlite3.Row) -> dict[str, Any]:
+        d = dict(r)
+        for jcol, key in (
+            ("paragraphs_json", "paragraphs"),
+            ("glosses_json", "glosses"),
+            ("xray_json", "xray"),
+            ("mine_cards_json", "mine_cards"),
+        ):
+            try:
+                d[key] = json.loads(d.get(jcol) or "[]")
+            except Exception:
+                d[key] = []
+        d["mined"] = bool(d.get("mined"))
+        d["is_custom"] = bool(d.get("is_custom"))
+        return d
+
+    def list_german_classics(self) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM german_classics ORDER BY is_custom DESC, id ASC"
+            ).fetchall()
+        return [self._hydrate_classic(r) for r in rows]
+
+    def get_german_classic(self, classic_id: int) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            r = conn.execute("SELECT * FROM german_classics WHERE id = ?", (classic_id,)).fetchone()
+        return self._hydrate_classic(r) if r else None
+
+    def insert_custom_german_classic(self, item: dict[str, Any]) -> dict[str, Any]:
+        with self._conn() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO german_classics
+                    (slug, author, title, year, category, cefr, famous_line,
+                     conversation_tip, paragraphs_json, glosses_json, xray_json,
+                     mine_cards_json, word_count, is_custom)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    item["slug"],
+                    item["author"],
+                    item["title"],
+                    item.get("year", ""),
+                    item.get("category", "Eigener Text"),
+                    item.get("cefr", "B1"),
+                    item.get("famous_line", ""),
+                    item.get("conversation_tip", ""),
+                    json.dumps(item.get("paragraphs", []), ensure_ascii=False),
+                    json.dumps(item.get("glosses", []), ensure_ascii=False),
+                    json.dumps(item.get("xray", []), ensure_ascii=False),
+                    json.dumps(item.get("mine_cards", []), ensure_ascii=False),
+                    int(item.get("word_count", 60)),
+                ),
+            )
+            r = conn.execute("SELECT * FROM german_classics WHERE id = ?", (cur.lastrowid,)).fetchone()
+        return self._hydrate_classic(r)
+
+    def mark_german_classic_read(self, classic_id: int) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE german_classics SET read_count = read_count + 1, last_read_at = ? WHERE id = ?",
+                (time.time(), classic_id),
+            )
+            r = conn.execute("SELECT * FROM german_classics WHERE id = ?", (classic_id,)).fetchone()
+        return self._hydrate_classic(r) if r else None
+
+    def mark_german_classic_mined(self, classic_id: int) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE german_classics SET mined = 1 WHERE id = ?", (classic_id,))
+
+    def get_german_daily_cache(self, date_key: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            r = conn.execute(
+                "SELECT * FROM german_daily_cache WHERE date_key = ?", (date_key,)
+            ).fetchone()
+        if not r:
+            return None
+        payload = json.loads(r["payload_json"])
+        payload["date_key"] = r["date_key"]
+        payload["source"] = r["source"]
+        payload["read_done"] = bool(r["read_done"])
+        payload["quiz_answered"] = int(r["quiz_answered"])
+        payload["updated_at"] = r["updated_at"]
+        return payload
+
+    def save_german_daily_cache(self, date_key: str, payload: dict[str, Any], source: str) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO german_daily_cache (date_key, payload_json, source, read_done, quiz_answered, updated_at)
+                VALUES (?, ?, ?, 0, -1, ?)
+                ON CONFLICT(date_key) DO UPDATE SET
+                    payload_json = excluded.payload_json,
+                    source = excluded.source,
+                    updated_at = excluded.updated_at
+                """,
+                (date_key, json.dumps(payload, ensure_ascii=False), source, now_iso),
+            )
+
+    def update_german_daily_progress(
+        self, date_key: str, *, read_done: bool | None = None, quiz_answered: int | None = None
+    ) -> None:
+        sets: list[str] = []
+        vals: list[Any] = []
+        if read_done is not None:
+            sets.append("read_done = ?")
+            vals.append(1 if read_done else 0)
+        if quiz_answered is not None:
+            sets.append("quiz_answered = ?")
+            vals.append(int(quiz_answered))
+        if not sets:
+            return
+        vals.append(date_key)
+        with self._conn() as conn:
+            conn.execute(f"UPDATE german_daily_cache SET {', '.join(sets)} WHERE date_key = ?", vals)
+
+    def log_german_activity(
+        self,
+        day_key: str,
+        kind: str,
+        *,
+        correct: bool = True,
+        words_count: int = 0,
+        points: int = 0,
+        detail: str = "",
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO german_activity (day_key, kind, correct, words_count, points, detail, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (day_key, kind, 1 if correct else 0, int(words_count), int(points), detail, time.time()),
+            )
+
+    def list_german_activity(self, limit: int = 500) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM german_activity ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def save_german_writing(
+        self, prompt_chunks: str, user_text: str, recast_de: str, feedback: dict[str, Any]
+    ) -> dict[str, Any]:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO german_writing_log (prompt_chunks, user_text, recast_de, feedback_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (prompt_chunks, user_text, recast_de, json.dumps(feedback, ensure_ascii=False), now_iso),
+            )
+            r = conn.execute("SELECT * FROM german_writing_log WHERE id = ?", (cur.lastrowid,)).fetchone()
+        out = dict(r)
+        out["feedback"] = json.loads(out.get("feedback_json") or "{}")
+        return out
+
+    def list_german_writing(self, limit: int = 10) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM german_writing_log ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["feedback"] = json.loads(d.get("feedback_json") or "{}")
+            except Exception:
+                d["feedback"] = {}
+            out.append(d)
+        return out
 
 
 db = HermesDB()
