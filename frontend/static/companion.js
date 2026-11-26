@@ -87,26 +87,49 @@
   function renderAgendaPreview(cal) {
     const el = $('agenda-summary');
     if (!el) return;
-    let html = '';
+    el.innerHTML = '';
     if (cal.current_event) {
-      html += `<div style="padding:10px 12px;background:#111;color:#fff;border-radius:8px;margin-bottom:10px;">
-        <div style="font-size:11px;letter-spacing:1.2px;font-weight:800;">HAPPENING NOW · ${cal.current_event.remaining_label.toUpperCase()}</div>
-        <div style="font-size:16px;font-weight:700;margin-top:3px;">${cal.current_event.title}</div>
-        <div style="font-size:13px;opacity:0.85;">${cal.current_event.time_range}</div>
-      </div>`;
+      const hero = document.createElement('div');
+      hero.style.cssText = 'padding:10px 12px;background:#111;color:#fff;border-radius:8px;margin-bottom:10px;';
+      const lbl = document.createElement('div');
+      lbl.style.cssText = 'font-size:11px;letter-spacing:1.2px;font-weight:800;';
+      lbl.textContent = `HAPPENING NOW · ${(cal.current_event.remaining_label || '').toUpperCase()}`;
+      const title = document.createElement('div');
+      title.style.cssText = 'font-size:16px;font-weight:700;margin-top:3px;';
+      title.textContent = cal.current_event.title || '';
+      const rng = document.createElement('div');
+      rng.style.cssText = 'font-size:13px;opacity:0.85;';
+      rng.textContent = cal.current_event.time_range || '';
+      hero.append(lbl, title, rng);
+      el.appendChild(hero);
     }
-    const items = cal.upcoming_today.slice(0, 5);
+    const items = (cal.upcoming_today || []).slice(0, 5);
     if (!items.length) {
-      html += '<div style="font-size:14px;color:#5c5b57;">No remaining events today.</div>';
-    } else {
-      items.forEach((ev) => {
-        html += `<div style="display:flex;gap:12px;padding:8px 0;border-bottom:1px solid #e5e2d9;font-size:14px;">
-          <strong style="min-width:56px;font-family:monospace;">${ev.start_label}</strong>
-          <div><strong>${ev.title}</strong>${ev.location ? `<div style="font-size:12px;color:#5c5b57;">${ev.location}</div>` : ''}</div>
-        </div>`;
-      });
+      const empty = document.createElement('div');
+      empty.style.cssText = 'font-size:14px;color:#5c5b57;';
+      empty.textContent = 'No remaining events today.';
+      el.appendChild(empty);
+      return;
     }
-    el.innerHTML = html;
+    items.forEach((ev) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;gap:12px;padding:8px 0;border-bottom:1px solid #e5e2d9;font-size:14px;';
+      const timeEl = document.createElement('strong');
+      timeEl.style.cssText = 'min-width:56px;font-family:monospace;';
+      timeEl.textContent = ev.start_label || '';
+      const info = document.createElement('div');
+      const t = document.createElement('strong');
+      t.textContent = ev.title || '';
+      info.appendChild(t);
+      if (ev.location) {
+        const loc = document.createElement('div');
+        loc.style.cssText = 'font-size:12px;color:#5c5b57;';
+        loc.textContent = ev.location;
+        info.appendChild(loc);
+      }
+      row.append(timeEl, info);
+      el.appendChild(row);
+    });
   }
 
   function renderLockscreenControls(settings) {
@@ -114,6 +137,7 @@
     const enabledSet = new Set(settings.lockscreen_slides || ['smart']);
     const slideDefs = [
       { id: 'smart', title: 'Smart Context-Aware', desc: 'NOW + NEXT UP + Rest of Today + Tasks + Weather' },
+      { id: 'deutsch', title: 'Deutsch Immersion (A2→C2)', desc: 'Chunk/Slang of the Day + Famous Quote + Cloze Teaser + Sprachindex' },
       { id: 'calendar', title: 'Full Calendar', desc: 'Today timeline + Tomorrow preview' },
       { id: 'planning', title: 'Planning & Briefing', desc: 'Daily focus + Checklist + Morning Market Pulse' },
       { id: 'weather', title: 'Detailed Weather', desc: 'Current + Next 8 Hours + 5-Day Outlook' },
@@ -338,6 +362,187 @@
     } catch (_) {}
   }
 
+  function speakGerman(text, rate = 1.0) {
+    if (!('speechSynthesis' in window)) {
+      toast('Browser speech synthesis unavailable on this device');
+      return;
+    }
+    const clean = (text || '').replace(/[¹²³⁴⁵⁶⁷⁸⁹⁰]/g, '').trim();
+    if (!clean) return;
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(clean);
+    utter.lang = 'de-DE';
+    utter.rate = rate;
+    const voices = window.speechSynthesis.getVoices() || [];
+    const deVoice = voices.find((v) => /^de/i.test(v.lang));
+    if (deVoice) utter.voice = deVoice;
+    const status = $('de-audio-status');
+    utter.onstart = () => { if (status) status.textContent = `SPEAKING ${rate}×`; };
+    utter.onend = () => { if (status) status.textContent = 'READY'; };
+    utter.onerror = () => { if (status) status.textContent = 'READY'; };
+    window.speechSynthesis.speak(utter);
+  }
+
+  function renderWritingResult(entry) {
+    const box = $('de-writing-result');
+    if (!box || !entry) return;
+    const fb = entry.feedback || {};
+    box.innerHTML = '';
+    const card = document.createElement('div');
+    card.style.cssText = 'background:#f5f4ef;border:1.5px solid #1a1a1a;border-radius:10px;padding:12px 14px;font-size:14px;line-height:1.45;';
+
+    const top = document.createElement('div');
+    top.style.cssText = 'font-weight:800;margin-bottom:6px;';
+    top.textContent = `Score: ${fb.score || 80}/100 — ${fb.praise || ''}`;
+    card.appendChild(top);
+
+    const recast = document.createElement('div');
+    recast.style.cssText = 'background:#111;color:#fff;padding:8px 10px;border-radius:6px;margin-bottom:8px;';
+    recast.textContent = `Native Recast: ${entry.recast_de || fb.recast_de || ''}`;
+    card.appendChild(recast);
+
+    (fb.fixes || []).forEach((f) => {
+      const fixEl = document.createElement('div');
+      fixEl.style.cssText = 'font-size:13px;margin-bottom:5px;';
+      fixEl.textContent = `• ${f.original || ''} → ${f.better || ''} (${f.why || ''})`;
+      card.appendChild(fixEl);
+    });
+
+    if (fb.c2_upgrade) {
+      const up = document.createElement('div');
+      up.style.cssText = 'font-size:13px;color:#444;border-top:1px solid #d7d4cb;padding-top:6px;margin-top:6px;';
+      up.textContent = `C2 Elevation: ${fb.c2_upgrade}`;
+      card.appendChild(up);
+    }
+
+    const listenBtn = document.createElement('button');
+    listenBtn.type = 'button';
+    listenBtn.className = 'btn btn-sm';
+    listenBtn.style.marginTop = '8px';
+    listenBtn.textContent = 'Listen to Native Recast';
+    listenBtn.addEventListener('click', () => speakGerman(entry.recast_de || fb.recast_de || '', 0.95));
+    card.appendChild(listenBtn);
+    box.appendChild(card);
+  }
+
+  function renderDeutsch(german, settings) {
+    if (!german || !$('de-cefr-badge')) return;
+    const m = german.mastery || {};
+    $('de-cefr-badge').textContent = `${m.cefr_label || 'A2.0'} · ${m.total || 180}/1000`;
+    $('de-milestone-line').textContent = `Streak: ${m.streak_days || 0}d · Due: ${m.due_count || 0} cards · Accuracy: ${m.accuracy_pct || 0}% · Next ${m.next_band || 'B1'}: ${m.milestone || ''}`;
+
+    const grid = $('de-strands-grid');
+    grid.innerHTML = '';
+    (m.strands || []).forEach((st) => {
+      const cell = document.createElement('div');
+      cell.style.cssText = 'border:1px solid #d7d4cb;border-radius:8px;padding:8px 10px;background:#faf9f5;';
+      const hdr = document.createElement('div');
+      hdr.style.cssText = 'display:flex;justify-content:space-between;font-size:12px;font-weight:800;margin-bottom:5px;';
+      const l = document.createElement('span');
+      l.textContent = st.label;
+      const r = document.createElement('span');
+      r.textContent = `${st.score} / ${st.max}`;
+      hdr.append(l, r);
+      const bar = document.createElement('div');
+      bar.style.cssText = 'height:8px;background:#e5e2d9;border-radius:4px;overflow:hidden;';
+      const fill = document.createElement('div');
+      fill.style.cssText = `height:100%;width:${st.pct || 0}%;background:#111;`;
+      bar.appendChild(fill);
+      cell.append(hdr, bar);
+      grid.appendChild(cell);
+    });
+
+    if (settings) {
+      $('de-level-select').value = (settings.german_level || 'A2').toUpperCase();
+      $('de-daily-goal').value = String(settings.german_daily_goal || 15);
+    }
+
+    const cl = german.active_classic;
+    const audioBox = $('de-audio-preview');
+    if (audioBox && cl) {
+      audioBox.innerHTML = '';
+      const h = document.createElement('div');
+      h.style.fontWeight = '800';
+      h.textContent = `${cl.author} (${cl.year}) — ${cl.title}`;
+      const q = document.createElement('div');
+      q.style.cssText = 'margin:4px 0;font-style:italic;';
+      q.textContent = cl.famous_line || '';
+      const tip = document.createElement('div');
+      tip.style.cssText = 'font-size:12px;color:#5c5b57;';
+      tip.textContent = `Drop in conversation: ${cl.conversation_tip || ''}`;
+      audioBox.append(h, q, tip);
+    }
+
+    const chips = $('de-sprint-chips');
+    if (chips) {
+      chips.innerHTML = '';
+      (german.sprint_chunks || []).forEach((ch) => {
+        const pill = document.createElement('button');
+        pill.type = 'button';
+        pill.className = 'btn btn-sm';
+        pill.textContent = ch;
+        pill.addEventListener('click', () => {
+          const ta = $('de-writing-input');
+          ta.value = (ta.value ? ta.value + ' ' : '') + ch;
+          ta.focus();
+        });
+        chips.appendChild(pill);
+      });
+    }
+
+    if (german.recent_writings && german.recent_writings.length && !$('de-writing-result').hasChildNodes()) {
+      renderWritingResult(german.recent_writings[0]);
+    }
+
+    const classicsList = $('de-classics-list');
+    const classics = german.classics || [];
+    $('de-classics-count').textContent = `${classics.length} TEXTS`;
+    if (classicsList) {
+      classicsList.innerHTML = '';
+      classics.forEach((item) => {
+        const row = document.createElement('div');
+        row.className = 'task-item';
+        row.style.alignItems = 'flex-start';
+
+        const info = document.createElement('div');
+        info.style.flex = '1';
+        const title = document.createElement('div');
+        title.style.fontWeight = '700';
+        title.textContent = `${item.author} (${item.year}) · ${item.title} [${item.cefr}]`;
+        const quote = document.createElement('div');
+        quote.style.cssText = 'font-size:13px;margin:3px 0;';
+        quote.textContent = item.famous_line || '';
+        const tip = document.createElement('div');
+        tip.style.cssText = 'font-size:12px;color:#5c5b57;';
+        tip.textContent = item.conversation_tip || '';
+        info.append(title, quote, tip);
+
+        const acts = document.createElement('div');
+        acts.className = 'row-wrap';
+        const playBtn = document.createElement('button');
+        playBtn.type = 'button';
+        playBtn.className = 'btn btn-sm';
+        playBtn.textContent = 'Listen';
+        playBtn.addEventListener('click', () => {
+          const txt = (item.paragraphs || []).map((p) => p.de).join(' ');
+          speakGerman(txt, 0.95);
+        });
+        const mineBtn = document.createElement('button');
+        mineBtn.type = 'button';
+        mineBtn.className = 'btn btn-sm';
+        mineBtn.textContent = item.mined ? 'Mined ✓' : '+ FSRS';
+        mineBtn.addEventListener('click', async () => {
+          const res = await api(`/api/german/classics/${item.id}/mine`, { method: 'POST' });
+          renderDeutsch(res.german, appState.settings);
+          toast(`Added ${res.added} chunk(s) to Kindle FSRS`);
+        });
+        acts.append(playBtn, mineBtn);
+        row.append(info, acts);
+        classicsList.appendChild(row);
+      });
+    }
+  }
+
   async function loadState(runAutoSync = true) {
     const data = await api('/api/state');
     appState = data;
@@ -345,6 +550,7 @@
     renderTasks(data.tasks);
     renderPomodoro(data.pomodoro);
     renderAgendaPreview(data.calendar);
+    renderDeutsch(data.german, data.settings);
     renderLockscreenControls(data.settings);
     renderModules(data.modules);
     renderSettingsForm(data.settings);
@@ -472,6 +678,111 @@
       toast('Refreshing daily briefing...');
       await api('/api/briefing/refresh', { method: 'POST' });
       toast('Briefing updated');
+    });
+
+    // ---------- Hermes Deutsch Events ----------
+    $('de-save-cfg-btn').addEventListener('click', async () => {
+      const level = $('de-level-select').value;
+      const goal = Math.max(5, Math.min(50, parseInt($('de-daily-goal').value, 10) || 15));
+      const updated = await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ german_level: level, german_daily_goal: goal }),
+      });
+      appState.settings = updated;
+      toast(`Deutsch calibrated to ${level} (${goal} cards/day)`);
+      await loadState(false);
+    });
+
+    $('de-refresh-reader-btn').addEventListener('click', async () => {
+      toast('Generating fresh i+1 German reader...');
+      const german = await api('/api/german/reader/refresh', { method: 'POST' });
+      appState.german = german;
+      renderDeutsch(german, appState.settings);
+      toast('Daily graded reader refreshed');
+    });
+
+    const playActiveClassic = (rate) => {
+      const cl = appState && appState.german && appState.german.active_classic;
+      if (!cl) return;
+      const txt = (cl.paragraphs || []).map((p) => p.de).join(' ');
+      speakGerman(txt, rate);
+    };
+    $('de-play-classic-btn').addEventListener('click', () => playActiveClassic(1.0));
+    $('de-play-classic-slow-btn').addEventListener('click', () => playActiveClassic(0.8));
+    $('de-play-reader-btn').addEventListener('click', () => {
+      const rd = appState && appState.german && appState.german.reader;
+      if (!rd) return;
+      const txt = (rd.paragraphs || []).map((p) => p.de).join(' ');
+      speakGerman(txt, 0.95);
+    });
+    $('de-stop-audio-btn').addEventListener('click', () => {
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+      $('de-audio-status').textContent = 'READY';
+    });
+    $('de-log-shadow-btn').addEventListener('click', async () => {
+      const res = await api('/api/german/shadow', { method: 'POST' });
+      appState.german = res.german;
+      renderDeutsch(res.german, appState.settings);
+      toast('Shadowing logged (+8 Output pts)');
+    });
+
+    $('de-submit-writing-btn').addEventListener('click', async () => {
+      const user_text = $('de-writing-input').value.trim();
+      if (user_text.length < 3) {
+        toast('Write at least one short German sentence first');
+        return;
+      }
+      toast('Evaluating & crafting native recast...');
+      const chunks = (appState && appState.german && appState.german.sprint_chunks) || [];
+      const res = await api('/api/german/writing', {
+        method: 'POST',
+        body: JSON.stringify({ user_text, target_chunks: chunks }),
+      });
+      appState.german = res.german;
+      renderWritingResult(res.entry);
+      renderDeutsch(res.german, appState.settings);
+      toast('Native recast ready (+18 Output pts)');
+    });
+
+    $('de-add-card-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const payload = {
+        kind: $('de-card-kind').value,
+        cefr: $('de-card-cefr').value,
+        category: $('de-card-kind').value === 'slang' ? 'Umgangssprache' : 'Eigene Karte',
+        prompt_de: $('de-card-prompt').value.trim(),
+        answer_de: $('de-card-answer').value.trim(),
+        full_de: $('de-card-full').value.trim(),
+        hint_en: $('de-card-hint').value.trim(),
+        translation_en: $('de-card-en').value.trim(),
+        rule_note: $('de-card-rule').value.trim(),
+      };
+      const res = await api('/api/german/cards', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      appState.german = res.german;
+      e.target.reset();
+      renderDeutsch(res.german, appState.settings);
+      toast('Card added to Kindle FSRS deck');
+    });
+
+    $('de-import-classic-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      toast('Building Kindle study packet...');
+      const res = await api('/api/german/classics/import', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: $('de-imp-title').value.trim(),
+          author: $('de-imp-author').value.trim() || 'Eigene Sammlung',
+          german_text: $('de-imp-de').value.trim(),
+          english_translation: $('de-imp-en').value.trim(),
+        }),
+      });
+      appState.german = res.german;
+      e.target.reset();
+      renderDeutsch(res.german, appState.settings);
+      toast('Study packet added — tap SYNC on Kindle!');
     });
 
     $('gcal-save-creds-btn').addEventListener('click', async () => {

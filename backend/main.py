@@ -35,7 +35,8 @@ from backend.modules.registry import (
     dispatch_action,
     resolve_lockscreen_slide,
 )
-from backend.services import calendar_svc, gemini_svc, google_cal_svc, pomodoro_svc, weather_svc
+from backend.services import calendar_svc, gemini_svc, german_svc, google_cal_svc, pomodoro_svc, weather_svc
+from backend.services.german_data import ROOT_PACKS
 from backend.services.renderer_svc import renderer
 
 
@@ -84,7 +85,6 @@ async def security_headers_middleware(request: Request, call_next):
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=()")
     return response
 
-
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
@@ -129,6 +129,36 @@ class SettingsUpdate(BaseModel):
     lockscreen_mode: str | None = None
     lockscreen_slides: list[str] | None = None
     enabled_modules: list[str] | None = None
+    german_level: str | None = Field(default=None, max_length=10)
+    german_daily_goal: int | None = Field(default=None, ge=5, le=50)
+
+
+class GermanCardCreate(BaseModel):
+    kind: str = Field(default="cloze", max_length=32)
+    cefr: str = Field(default="A2", max_length=8)
+    category: str = Field(default="Chunk", max_length=40)
+    prompt_de: str = Field(..., min_length=2, max_length=260)
+    answer_de: str = Field(..., min_length=1, max_length=80)
+    full_de: str = Field(..., min_length=2, max_length=280)
+    hint_en: str = Field(default="", max_length=160)
+    translation_en: str = Field(default="", max_length=260)
+    rule_note: str = Field(default="", max_length=320)
+
+
+class GermanReviewPayload(BaseModel):
+    rating: int = Field(..., ge=1, le=4)
+
+
+class GermanWritingPayload(BaseModel):
+    user_text: str = Field(..., min_length=3, max_length=1000)
+    target_chunks: list[str] = Field(default_factory=list)
+
+
+class GermanImportClassicPayload(BaseModel):
+    title: str = Field(..., min_length=2, max_length=140)
+    author: str = Field(default="Eigene Sammlung", max_length=100)
+    german_text: str = Field(..., min_length=10, max_length=2500)
+    english_translation: str = Field(default="", max_length=2500)
 
 
 class LocationSyncPayload(BaseModel):
@@ -189,27 +219,32 @@ def _render_html_from_bundle(
     sim_time: str | None = None,
     mock_override: bool | None = None,
     token: str = "",
+    extra_ctx: dict[str, Any] | None = None,
 ) -> str:
     is_lockscreen = screen_id.startswith("lockscreen_")
     template = templates.get_template("kindle_shell.html")
-    return template.render(
-        screen=screen_id,
-        is_lockscreen=is_lockscreen,
-        inline_css=_read_kindle_css() if inline_css else "",
-        bundle=bundle,
-        cal=bundle["calendar"],
-        weather=bundle["weather"],
-        briefing=bundle["briefing"],
-        tasks=bundle["tasks"],
-        pomo=bundle["pomodoro"],
-        tiles=bundle["tiles"],
-        settings=settings,
-        sim_time=sim_time or "",
-        mock_override="" if mock_override is None else ("1" if mock_override else "0"),
-        token=token,
-        device_width=KINDLE_WIDTH,
-        device_height=KINDLE_HEIGHT,
-    )
+    ctx: dict[str, Any] = {
+        "screen": screen_id,
+        "is_lockscreen": is_lockscreen,
+        "inline_css": _read_kindle_css() if inline_css else "",
+        "bundle": bundle,
+        "cal": bundle["calendar"],
+        "weather": bundle["weather"],
+        "briefing": bundle["briefing"],
+        "german": bundle["german"],
+        "tasks": bundle["tasks"],
+        "pomo": bundle["pomodoro"],
+        "tiles": bundle["tiles"],
+        "settings": settings,
+        "sim_time": sim_time or "",
+        "mock_override": "" if mock_override is None else ("1" if mock_override else "0"),
+        "token": token,
+        "device_width": KINDLE_WIDTH,
+        "device_height": KINDLE_HEIGHT,
+    }
+    if extra_ctx:
+        ctx.update(extra_ctx)
+    return template.render(**ctx)
 
 
 async def _render_kindle_html(
@@ -481,6 +516,8 @@ async def api_sync_batch(
         act = (item.action or "").strip()
         if not act or act == "system:exit":
             continue
+        # Refresh settings per action so chained offline steps never read stale indices
+        settings = db.get_all_settings()
         await dispatch_action(
             action=act,
             current_screen=item.current_screen or "home",
@@ -596,7 +633,7 @@ async def api_offline_bundle(
     # Cycle-mode slides if enabled
     cycle_defs: list[dict[str, str]] = []
     if settings.get("lockscreen_mode") == "cycle":
-        valid_slides = {"smart", "calendar", "planning", "weather"}
+        valid_slides = {"smart", "calendar", "planning", "weather", "deutsch"}
         slides = [s for s in settings.get("lockscreen_slides", ["smart"]) if s in valid_slides] or ["smart"]
         for s in slides:
             key = f"lock:cycle_{s}"
@@ -615,6 +652,143 @@ async def api_offline_bundle(
             )
             cycle_defs.append({"id": s, "key": key, "file": f"lockscreens/cycle_{s}.png"})
 
+    # ---------- Hermes Deutsch Offline-First Deck, Famous Texts & Root Packs ----------
+    g_data = base_bundle["german"]
+    deck_cards = (g_data.get("deck") or [])[:10]
+    deutsch_deck_defs: list[dict[str, Any]] = []
+    for idx, card in enumerate(deck_cards):
+        cid = int(card["id"])
+        front_key = f"de:card_{cid}_front"
+        back_key = f"de:card_{cid}_back"
+        common_extra = {
+            "deutsch_card_override": card,
+            "deutsch_card_pos": idx + 1,
+            "deutsch_deck_total": len(deck_cards),
+            "deutsch_deck_done": False,
+        }
+        html_items.append(
+            (
+                front_key,
+                _render_html_from_bundle(
+                    "deutsch_drill",
+                    base_bundle,
+                    settings,
+                    inline_css=True,
+                    sim_time=sim_time,
+                    mock_override=mock,
+                    extra_ctx={**common_extra, "deutsch_flipped_override": False},
+                ),
+            )
+        )
+        html_items.append(
+            (
+                back_key,
+                _render_html_from_bundle(
+                    "deutsch_drill",
+                    base_bundle,
+                    settings,
+                    inline_css=True,
+                    sim_time=sim_time,
+                    mock_override=mock,
+                    extra_ctx={**common_extra, "deutsch_flipped_override": True},
+                ),
+            )
+        )
+        deutsch_deck_defs.append(
+            {
+                "id": cid,
+                "kind": card["kind"],
+                "cefr": card["cefr"],
+                "answer_de": card["answer_de"],
+                "full_de": card["full_de"],
+                "front_key": front_key,
+                "back_key": back_key,
+                "front_file": f"deutsch/card_{cid}_front.png",
+                "back_file": f"deutsch/card_{cid}_back.png",
+            }
+        )
+
+    # Celebratory offline deck completion screen
+    html_items.append(
+        (
+            "de:deck_done",
+            _render_html_from_bundle(
+                "deutsch_drill",
+                base_bundle,
+                settings,
+                inline_css=True,
+                sim_time=sim_time,
+                mock_override=mock,
+                extra_ctx={"deutsch_deck_done": True, "deutsch_deck_total": len(deck_cards)},
+            ),
+        )
+    )
+
+    # Bundle 4 Famous Texts offline (current + next 3), each in 3 modes: gloss, parallel, xray
+    all_classics = g_data.get("classics") or []
+    start_cidx = int(g_data.get("classic_idx") or 0)
+    deutsch_classic_defs: list[dict[str, Any]] = []
+    if all_classics:
+        count_cls = min(4, len(all_classics))
+        for offset in range(count_cls):
+            c_idx = (start_cidx + offset) % len(all_classics)
+            cl = all_classics[c_idx]
+            cl_id = int(cl["id"])
+            extra_cl = {
+                "deutsch_classic_override": cl,
+                "deutsch_classic_pos": c_idx + 1,
+                "deutsch_classic_total": len(all_classics),
+            }
+            gk = f"de:cl_{cl_id}_gloss"
+            pk = f"de:cl_{cl_id}_parallel"
+            xk = f"de:cl_{cl_id}_xray"
+            html_items.append(
+                (gk, _render_html_from_bundle("deutsch_classic", base_bundle, settings, inline_css=True, sim_time=sim_time, mock_override=mock, extra_ctx=extra_cl))
+            )
+            html_items.append(
+                (pk, _render_html_from_bundle("deutsch_classic_parallel", base_bundle, settings, inline_css=True, sim_time=sim_time, mock_override=mock, extra_ctx=extra_cl))
+            )
+            html_items.append(
+                (xk, _render_html_from_bundle("deutsch_classic_xray", base_bundle, settings, inline_css=True, sim_time=sim_time, mock_override=mock, extra_ctx=extra_cl))
+            )
+            deutsch_classic_defs.append(
+                {
+                    "id": cl_id,
+                    "idx": c_idx,
+                    "author": cl["author"],
+                    "title": cl["title"],
+                    "gloss_key": gk,
+                    "parallel_key": pk,
+                    "xray_key": xk,
+                    "gloss_file": f"deutsch/classic_{cl_id}_gloss.png",
+                    "parallel_file": f"deutsch/classic_{cl_id}_parallel.png",
+                    "xray_file": f"deutsch/classic_{cl_id}_xray.png",
+                }
+            )
+
+    # Bundle all Root/Slang packs offline so NEXT/PREV works across the full set in Airplane Mode
+    start_ridx = int(g_data.get("root_idx") or 0)
+    deutsch_root_defs: list[dict[str, Any]] = []
+    for offset in range(len(ROOT_PACKS)):
+        r_idx = (start_ridx + offset) % len(ROOT_PACKS)
+        rp = ROOT_PACKS[r_idx]
+        rk = f"de:root_{r_idx}"
+        html_items.append(
+            (
+                rk,
+                _render_html_from_bundle(
+                    "deutsch_root",
+                    base_bundle,
+                    settings,
+                    inline_css=True,
+                    sim_time=sim_time,
+                    mock_override=mock,
+                    extra_ctx={"deutsch_root_override": rp, "deutsch_root_pos": r_idx + 1, "deutsch_root_total": len(ROOT_PACKS)},
+                ),
+            )
+        )
+        deutsch_root_defs.append({"idx": r_idx, "root": rp["root"], "key": rk, "file": f"deutsch/root_{r_idx}.png"})
+
     rendered_map = await renderer.render_batch(html_items)
 
     screens_manifest: dict[str, Any] = {}
@@ -628,9 +802,10 @@ async def api_offline_bundle(
         }
 
     pomo = base_bundle["pomodoro"]
+    reader = g_data["reader"]
     tz_offset = int((now.utcoffset().total_seconds()) if now.utcoffset() else 0)
     manifest = {
-        "version": 1,
+        "version": 2,
         "synced_at_unix": int(time.time()),
         "synced_at_label": now.strftime("%H:%M"),
         "date_short": base_bundle["date_short"],
@@ -667,6 +842,53 @@ async def api_offline_bundle(
             "remaining_sec": int(pomo["remaining_sec"]),
             "completed_sessions": int(pomo["completed_sessions"]),
         },
+        "deutsch": {
+            "cefr_label": g_data["mastery"]["cefr_label"],
+            "sprachindex": int(g_data["mastery"]["total"]),
+            "deck": [
+                {
+                    "id": d["id"],
+                    "kind": d["kind"],
+                    "cefr": d["cefr"],
+                    "answer_de": d["answer_de"],
+                    "full_de": d["full_de"],
+                    "front_file": d["front_file"],
+                    "back_file": d["back_file"],
+                    "front_hitboxes": rendered_map[d["front_key"]].hitboxes,
+                    "back_hitboxes": rendered_map[d["back_key"]].hitboxes,
+                }
+                for d in deutsch_deck_defs
+            ],
+            "deck_done_file": "deutsch/deck_done.png",
+            "deck_done_hitboxes": rendered_map["de:deck_done"].hitboxes,
+            "classic_total": len(all_classics),
+            "classics": [
+                {
+                    "id": c["id"],
+                    "idx": c["idx"],
+                    "author": c["author"],
+                    "title": c["title"],
+                    "gloss_file": c["gloss_file"],
+                    "gloss_hitboxes": rendered_map[c["gloss_key"]].hitboxes,
+                    "parallel_file": c["parallel_file"],
+                    "parallel_hitboxes": rendered_map[c["parallel_key"]].hitboxes,
+                    "xray_file": c["xray_file"],
+                    "xray_hitboxes": rendered_map[c["xray_key"]].hitboxes,
+                }
+                for c in deutsch_classic_defs
+            ],
+            "roots": [
+                {
+                    "idx": r["idx"],
+                    "root": r["root"],
+                    "file": r["file"],
+                    "hitboxes": rendered_map[r["key"]].hitboxes,
+                }
+                for r in deutsch_root_defs
+            ],
+            "reader_quiz_answer_idx": int((reader.get("quiz") or {}).get("answer_idx", 0)),
+            "reader_quiz_explanation": str((reader.get("quiz") or {}).get("explanation", "Richtig!")),
+        },
     }
 
     buf = io.BytesIO()
@@ -679,6 +901,16 @@ async def api_offline_bundle(
             zf.writestr(s["file"], rendered_map[s["key"]].png_bytes)
         for c in cycle_defs:
             zf.writestr(c["file"], rendered_map[c["key"]].png_bytes)
+        for d in deutsch_deck_defs:
+            zf.writestr(d["front_file"], rendered_map[d["front_key"]].png_bytes)
+            zf.writestr(d["back_file"], rendered_map[d["back_key"]].png_bytes)
+        zf.writestr("deutsch/deck_done.png", rendered_map["de:deck_done"].png_bytes)
+        for c in deutsch_classic_defs:
+            zf.writestr(c["gloss_file"], rendered_map[c["gloss_key"]].png_bytes)
+            zf.writestr(c["parallel_file"], rendered_map[c["parallel_key"]].png_bytes)
+            zf.writestr(c["xray_file"], rendered_map[c["xray_key"]].png_bytes)
+        for r in deutsch_root_defs:
+            zf.writestr(r["file"], rendered_map[r["key"]].png_bytes)
 
     return Response(
         content=buf.getvalue(),
@@ -794,6 +1026,7 @@ async def get_full_state(
         "calendar": bundle["calendar"],
         "weather": bundle["weather"],
         "briefing": bundle["briefing"],
+        "german": bundle["german"],
         "modules": bundle["all_modules"],
     }
 
@@ -973,6 +1206,133 @@ async def api_refresh_briefing(_: None = Depends(require_auth)):
     now = calendar_svc.get_local_now(settings["timezone"])
     briefing = await gemini_svc.get_daily_briefing(settings, now, force_refresh=True)
     return briefing
+
+
+# ---------- Hermes Deutsch Companion APIs (A2 -> C2) ----------
+
+
+@app.get("/api/german/state")
+async def api_german_state(_: None = Depends(require_auth)):
+    settings = db.get_all_settings()
+    now = calendar_svc.get_local_now(settings["timezone"])
+    return await german_svc.get_german_context(settings, now)
+
+
+@app.post("/api/german/cards")
+async def api_german_create_card(payload: GermanCardCreate, _: None = Depends(require_auth)):
+    slug = f"custom_card_{int(time.time() * 1000)}"
+    card = db.upsert_german_card(
+        {
+            "slug": slug,
+            "kind": payload.kind.strip() or "cloze",
+            "cefr": payload.cefr.strip().upper() or "A2",
+            "category": payload.category.strip() or "Chunk",
+            "prompt_de": payload.prompt_de.strip(),
+            "answer_de": payload.answer_de.strip(),
+            "full_de": payload.full_de.strip(),
+            "hint_en": payload.hint_en.strip(),
+            "translation_en": payload.translation_en.strip(),
+            "rule_note": payload.rule_note.strip(),
+            "source": "custom",
+        }
+    )
+    settings = db.get_all_settings()
+    now = calendar_svc.get_local_now(settings["timezone"])
+    return {"card": card, "german": await german_svc.get_german_context(settings, now)}
+
+
+@app.post("/api/german/cards/{card_id}/review")
+async def api_german_review_card(
+    card_id: int, payload: GermanReviewPayload, _: None = Depends(require_auth)
+):
+    settings = db.get_all_settings()
+    now = calendar_svc.get_local_now(settings["timezone"])
+    updated = german_svc.review_card(card_id, payload.rating, now.strftime("%Y-%m-%d"))
+    if not updated:
+        raise HTTPException(status_code=404, detail="Card not found")
+    return {"card": updated, "german": await german_svc.get_german_context(settings, now)}
+
+
+@app.delete("/api/german/cards/{card_id}")
+async def api_german_delete_card(card_id: int, _: None = Depends(require_auth)):
+    if not db.delete_german_card(card_id):
+        raise HTTPException(status_code=404, detail="Card not found")
+    settings = db.get_all_settings()
+    now = calendar_svc.get_local_now(settings["timezone"])
+    return {"ok": True, "german": await german_svc.get_german_context(settings, now)}
+
+
+@app.post("/api/german/classics/import")
+async def api_german_import_classic(
+    payload: GermanImportClassicPayload, _: None = Depends(require_auth)
+):
+    settings = db.get_all_settings()
+    now = calendar_svc.get_local_now(settings["timezone"])
+    try:
+        item = await german_svc.import_custom_classic(
+            title=payload.title,
+            author=payload.author,
+            german_text=payload.german_text,
+            english_translation=payload.english_translation,
+            settings=settings,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    # Point active classic to the newly imported item (custom items sort first -> index 0)
+    db.update_settings({"german_active_classic": 0})
+    return {"classic": item, "german": await german_svc.get_german_context(settings, now)}
+
+
+@app.post("/api/german/classics/{classic_id}/mine")
+async def api_german_mine_classic(classic_id: int, _: None = Depends(require_auth)):
+    added = german_svc.mine_classic_chunks(classic_id)
+    settings = db.get_all_settings()
+    now = calendar_svc.get_local_now(settings["timezone"])
+    return {"added": added, "german": await german_svc.get_german_context(settings, now)}
+
+
+@app.post("/api/german/classics/{classic_id}/read")
+async def api_german_read_classic(classic_id: int, _: None = Depends(require_auth)):
+    settings = db.get_all_settings()
+    now = calendar_svc.get_local_now(settings["timezone"])
+    cl = german_svc.mark_classic_read(classic_id, now.strftime("%Y-%m-%d"))
+    if not cl:
+        raise HTTPException(status_code=404, detail="Classic text not found")
+    return {"classic": cl, "german": await german_svc.get_german_context(settings, now)}
+
+
+@app.post("/api/german/writing")
+async def api_german_writing(payload: GermanWritingPayload, _: None = Depends(require_auth)):
+    settings = db.get_all_settings()
+    now = calendar_svc.get_local_now(settings["timezone"])
+    try:
+        result = await german_svc.evaluate_writing_sprint(
+            payload.user_text, payload.target_chunks, settings, now
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"entry": result, "german": await german_svc.get_german_context(settings, now)}
+
+
+@app.post("/api/german/shadow")
+async def api_german_shadow(_: None = Depends(require_auth)):
+    settings = db.get_all_settings()
+    now = calendar_svc.get_local_now(settings["timezone"])
+    db.log_german_activity(
+        now.strftime("%Y-%m-%d"),
+        "shadow",
+        correct=True,
+        points=8,
+        detail="companion_tts_shadowing",
+    )
+    return {"ok": True, "german": await german_svc.get_german_context(settings, now)}
+
+
+@app.post("/api/german/reader/refresh")
+async def api_german_refresh_reader(_: None = Depends(require_auth)):
+    settings = db.get_all_settings()
+    now = calendar_svc.get_local_now(settings["timezone"])
+    return await german_svc.get_german_context(settings, now, force_refresh=True)
 
 
 # ---------- Google Calendar OAuth2 & Multi-Calendar Sync ----------
