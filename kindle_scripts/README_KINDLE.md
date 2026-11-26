@@ -1,4 +1,4 @@
-# Kindle Paperwhite 10th Gen (PW4) Setup Guide (v2.1 Offline-First)
+# Kindle Paperwhite 10th Gen (PW4) Setup Guide (v3 Offline-First + Hermes Deutsch)
 
 Target hardware: **Kindle Paperwhite 10th Gen (PW4, 2018)** — `1072 × 1448` @ 300 PPI (E Ink Carta HD).
 
@@ -19,7 +19,7 @@ brew install go
 ```
 This builds a single self-contained ARMv7 ELF binary (`kindle_client/hermes-client-arm`) with embedded Mozilla root CA certificates (`x509roots/fallback`) so strict HTTPS works out of the box.
 
-### 2. Install KindleHermes v2.1 to Your Mounted Kindle (1 Command)
+### 2. Install KindleHermes v3 to Your Mounted Kindle (1 Command)
 Plug your PW4 in via USB (`/Volumes/Kindle`) and run:
 ```bash
 # Cloud primary (24/7) + automatic local laptop LAN fallback:
@@ -37,15 +37,15 @@ This installs:
 ```bash
 ./kindle_scripts/usb_sync.sh
 ```
-This uploads any pending offline task checkboxes (`cache/outbox.json`) to your server and writes a fresh offline bundle (all 8 screens + time-sliced Smart Lock Screens) straight to `/Volumes/Kindle/kindlehermes/cache/`.
+This uploads any pending offline actions (`cache/outbox.json` — task checkboxes, FSRS German card ratings, quiz answers, and reading bookmarks) to your server and writes a fresh offline bundle (all 12 screens, 10 FSRS flashcard pairs, 4 rotating Famous Texts in 3 reading modes, all 6 Verb-Prefix Root Packs, and time-sliced Smart Lock Screens) straight to `/Volumes/Kindle/kindlehermes/cache/`.
 
 ### 4. Daily Offline-First Usage
 Safely eject your Kindle and tap **`KindleHermes OS`** in your Library:
 * **Airplane Mode friendly:** Opens immediately from local cache without forcing Wi-Fi on.
-* **Browse all 8 screens offline:** Home, Today, Calendar (Today/Tomorrow), Planner, Pomodoro, Weather, and Morning Briefing load locally in ~50ms.
-* **Check off tasks & run Pomodoro offline:** Task changes queue in `outbox.json`; Pomodoro counts down locally on the Kindle clock.
-* **Sync when you want:** Turn on Wi-Fi and tap **`SYNC`** (or open Hermes OS while Wi-Fi is already on for a silent background refresh).
-* **In-App Smart Lock Screen:** Press the power button while inside Hermes OS to paint the time-accurate Smart Lock Screen for your current meeting slot.
+* **Browse all 12 screens offline:** `Home`, `Today`, `Calendar` (Today/Tomorrow), `Planner`, `Pomodoro`, `Weather`, `Briefing`, plus **Hermes Deutsch** (`Deutsch Hub`, `FSRS Blitz`, `Tageslektüre`, `Famous Texts`, and `Wurzel & Slang`) load locally in ~50ms.
+* **Study German & check off tasks offline:** Flip and rate FSRS cards (`Again / Hard / Good / Easy`), switch Famous Text modes (`DE + GLOSS`, `PARALLEL`, `X-RAY`), step through all 6 Root Packs, answer the `Tageslektüre` quiz, toggle tasks, and run Pomodoro on the local Kindle clock — all progress persists in `outbox.json` across offline restarts.
+* **Online content updates on demand:** When you finish your offline card batch or reach the end of your 4-text Famous Texts slice (`END OF PACK · SYNC FOR MORE TEXTS`), turn on Wi-Fi and tap **`SYNC`** (or plug in via USB and run `usb_sync.sh`) to commit your FSRS reviews and pull fresh cards, upcoming classics, and today's `Tageslektüre`.
+* **In-App Smart Lock Screen:** Press the power button while inside Hermes OS to paint the time-accurate Smart Lock Screen for your current meeting slot (or Deutsch slide).
 * **100% Stock Kindle Outside Hermes OS:** Tap **`EXIT`** (bottom-right) to release touchscreen and power-button hooks and return cleanly to your books.
 * Diagnostic logs are saved at `/mnt/us/kindlehermes/hermes.log`.
 
