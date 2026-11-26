@@ -1,11 +1,62 @@
-"""Optional PIN/Token authentication for cloud-hosted KindleHermes."""
+"""Optional PIN/Token authentication & login brute-force rate limiting for KindleHermes."""
 
 from __future__ import annotations
 
 import secrets
+import threading
+import time
+from collections import deque
+
 from fastapi import HTTPException, Request, status
 
 from backend.config import config
+
+_MAX_FAILED_ATTEMPTS = 10
+_LOCKOUT_WINDOW_SEC = 15 * 60
+_FAILED_LOGINS: dict[str, deque[float]] = {}
+_RATE_LOCK = threading.Lock()
+
+
+def client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "").strip()
+    if fwd:
+        return fwd.split(",")[0].strip()
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def check_login_rate_limit(ip: str) -> None:
+    now = time.monotonic()
+    cutoff = now - _LOCKOUT_WINDOW_SEC
+    with _RATE_LOCK:
+        bucket = _FAILED_LOGINS.get(ip)
+        if not bucket:
+            return
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= _MAX_FAILED_ATTEMPTS:
+            retry_after = max(60, int(_LOCKOUT_WINDOW_SEC - (now - bucket[0])))
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many failed login attempts. Please try again later.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+
+def record_login_attempt(ip: str, success: bool) -> None:
+    now = time.monotonic()
+    with _RATE_LOCK:
+        if success:
+            _FAILED_LOGINS.pop(ip, None)
+            return
+        bucket = _FAILED_LOGINS.setdefault(ip, deque())
+        bucket.append(now)
+
+
+def reset_login_rate_limits() -> None:
+    with _RATE_LOCK:
+        _FAILED_LOGINS.clear()
 
 
 def is_auth_enabled() -> bool:

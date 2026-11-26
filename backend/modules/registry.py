@@ -14,7 +14,7 @@ from typing import Any
 
 from backend.database import db
 from backend.modules.base import HermesModule
-from backend.services import calendar_svc, gemini_svc, google_cal_svc, pomodoro_svc, weather_svc
+from backend.services import calendar_svc, gemini_svc, german_svc, google_cal_svc, pomodoro_svc, weather_svc
 
 
 def _icon(body: str) -> str:
@@ -73,6 +73,15 @@ def _briefing_summary(bundle: dict[str, Any]) -> tuple[str, str]:
     b = bundle["briefing"]
     term = (b.get("concept_of_day") or {}).get("term", "Daily Pulse")
     return f"Concept: {term[:22]}", "DAILY"
+
+
+def _deutsch_summary(bundle: dict[str, Any]) -> tuple[str, str]:
+    g = bundle.get("german") or {}
+    m = g.get("mastery") or {}
+    due = int(m.get("due_count") or 0)
+    cefr = m.get("cefr_label") or "A2.0"
+    total = int(m.get("total") or 180)
+    return f"Sprachindex {total}/1000 · {due} due", cefr
 
 
 MODULES: list[HermesModule] = [
@@ -159,6 +168,20 @@ MODULES: list[HermesModule] = [
             'fill="none" stroke="currentColor" stroke-width="2.2"/>'
         ),
     ),
+    HermesModule(
+        id="deutsch",
+        title="Deutsch",
+        tagline="A2→C2 FSRS, speeches & slang",
+        nav_order=7,
+        supports_lockscreen=True,
+        lockscreen_slide="deutsch",
+        summary_builder=_deutsch_summary,
+        icon_svg=_icon(
+            '<path d="M4 6h10a3 3 0 0 1 2 1 3 3 0 0 1 2-1h10v20H18a3 3 0 0 0-2 1 3 3 0 0 0-2-1H4z" '
+            'fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/>'
+            '<path d="M16 7v20M8 12h4M8 17h4M20 12h4M20 17h4" stroke="currentColor" stroke-width="2.2"/>'
+        ),
+    ),
 ]
 
 MODULES_BY_ID: dict[str, HermesModule] = {m.id: m for m in MODULES}
@@ -172,11 +195,35 @@ VALID_SCREENS = {
     "pomodoro",
     "weather",
     "briefing",
+    "deutsch",
+    "deutsch_drill",
+    "deutsch_classic",
+    "deutsch_classic_parallel",
+    "deutsch_classic_xray",
+    "deutsch_read",
+    "deutsch_read_parallel",
+    "deutsch_root",
     "lockscreen_smart",
     "lockscreen_calendar",
     "lockscreen_planning",
     "lockscreen_weather",
+    "lockscreen_deutsch",
 }
+
+OFFLINE_SCREENS = [
+    "home",
+    "today",
+    "calendar",
+    "calendar_tomorrow",
+    "planner",
+    "pomodoro",
+    "weather",
+    "briefing",
+    "deutsch",
+    "deutsch_read",
+    "deutsch_read_parallel",
+    "deutsch_root",
+]
 
 
 def list_enabled_modules(enabled_ids: list[str] | None = None) -> list[HermesModule]:
@@ -188,7 +235,7 @@ def list_enabled_modules(enabled_ids: list[str] | None = None) -> list[HermesMod
 
 
 def resolve_lockscreen_slide(settings: dict[str, Any], now: datetime, requested: str = "auto", advance: bool = False) -> str:
-    valid_slides = {"smart", "calendar", "planning", "weather"}
+    valid_slides = {"smart", "calendar", "planning", "weather", "deutsch"}
     if requested in valid_slides:
         return requested
 
@@ -223,6 +270,7 @@ async def build_data_bundle(
     # Keep briefing fast during normal sync if today's Gemini briefing is already cached;
     # explicit "briefing:refresh" regenerates it on demand.
     briefing_data = await gemini_svc.get_daily_briefing(settings, now, force_refresh=False)
+    german_data = await german_svc.get_german_context(settings, now, force_refresh=False)
     tasks_data = db.list_tasks()
     pomo_data = pomodoro_svc.get_pomodoro_view(consume_alert=consume_pomo_alert)
 
@@ -235,6 +283,7 @@ async def build_data_bundle(
         "calendar": cal_data,
         "weather": weather_data,
         "briefing": briefing_data,
+        "german": german_data,
         "tasks": tasks_data,
         "pomodoro": pomo_data,
     }
@@ -284,6 +333,16 @@ async def dispatch_action(
         except ValueError:
             pass
 
+    elif act.startswith("task:set:"):
+        try:
+            parts = act.split(":")
+            task_id = int(parts[2])
+            completed = parts[3].strip() in ("1", "true", "yes")
+            db.update_task(task_id, completed=completed)
+            message = f"Set task {task_id} completed={completed}"
+        except (ValueError, IndexError):
+            pass
+
     elif act == "task:clear_done":
         db.clear_completed_tasks()
         message = "Cleared completed tasks"
@@ -319,6 +378,130 @@ async def dispatch_action(
         slide = db.advance_lockscreen_cycle()
         next_screen = f"lockscreen_{slide}"
         message = f"Slide: {slide}"
+
+    # ---------- Hermes Deutsch Interactive & Offline-Replayed Actions ----------
+
+    elif act == "deutsch:reveal":
+        db.update_settings({"german_drill_flipped": True, "german_drill_choice": ""})
+        next_screen = "deutsch_drill"
+        message = "Revealed answer"
+
+    elif act.startswith("deutsch:guess:"):
+        choice = act.split(":", 2)[2].strip().lower()
+        db.update_settings({"german_drill_flipped": True, "german_drill_choice": choice})
+        next_screen = "deutsch_drill"
+        message = f"Guessed {choice}"
+
+    elif act.startswith("deutsch:rate:"):
+        try:
+            parts = act.split(":")
+            card_id = int(parts[2])
+            rating = int(parts[3])
+            german_svc.review_card(card_id, rating, now.strftime("%Y-%m-%d"))
+            next_screen = "deutsch_drill"
+            message = f"Reviewed card {card_id} (rating {rating})"
+        except (ValueError, IndexError):
+            pass
+
+    elif act in ("deutsch:classic:next", "deutsch:classic:prev"):
+        german_svc.ensure_seeded()
+        classics = db.list_german_classics()
+        total = max(1, len(classics))
+        cur_idx = int(settings.get("german_active_classic") or 0)
+        delta = 1 if act.endswith(":next") else -1
+        db.update_settings({"german_active_classic": (cur_idx + delta) % total})
+        if next_screen not in ("deutsch_classic", "deutsch_classic_parallel", "deutsch_classic_xray"):
+            next_screen = "deutsch_classic"
+        message = "Switched famous text"
+
+    elif act.startswith("deutsch:classic:set:"):
+        try:
+            german_svc.ensure_seeded()
+            classics = db.list_german_classics()
+            total = max(1, len(classics))
+            idx = int(act.split(":", 3)[3]) % total
+            db.update_settings({"german_active_classic": idx})
+            message = f"Set active famous text index to {idx}"
+        except ValueError:
+            pass
+
+    elif act.startswith("deutsch:classic:read:"):
+        try:
+            cid = int(act.split(":", 3)[3])
+            german_svc.mark_classic_read(cid, now.strftime("%Y-%m-%d"))
+            message = f"Marked text {cid} read"
+        except ValueError:
+            pass
+
+    elif act.startswith("deutsch:classic:mine:"):
+        try:
+            cid = int(act.split(":", 3)[3])
+            added = german_svc.mine_classic_chunks(cid)
+            message = f"Mined {added} chunks into FSRS"
+        except ValueError:
+            pass
+
+    elif act in ("deutsch:root:next", "deutsch:root:prev"):
+        from backend.services.german_data import ROOT_PACKS
+
+        cur_idx = int(settings.get("german_active_root") or 0)
+        delta = 1 if act.endswith(":next") else -1
+        db.update_settings({"german_active_root": (cur_idx + delta) % len(ROOT_PACKS)})
+        next_screen = "deutsch_root"
+        message = "Switched root & slang pack"
+
+    elif act.startswith("deutsch:root:set:"):
+        try:
+            from backend.services.german_data import ROOT_PACKS
+
+            idx = int(act.split(":", 3)[3]) % len(ROOT_PACKS)
+            db.update_settings({"german_active_root": idx})
+            message = f"Set active root pack index to {idx}"
+        except ValueError:
+            pass
+
+    elif act == "deutsch:read_done":
+        g_ctx = await german_svc.get_german_context(settings, now, force_refresh=False)
+        reader = g_ctx["reader"]
+        if not reader.get("read_done"):
+            db.update_german_daily_progress(reader["date_key"], read_done=True)
+            db.log_german_activity(
+                now.strftime("%Y-%m-%d"),
+                "read",
+                correct=True,
+                words_count=int(reader.get("word_count") or 80),
+                points=15,
+                detail=f"reader:{reader['date_key']}",
+            )
+        message = "Daily reading completed"
+
+    elif act.startswith("deutsch:quiz:"):
+        try:
+            choice_idx = int(act.split(":", 2)[2])
+            g_ctx = await german_svc.get_german_context(settings, now, force_refresh=False)
+            reader = g_ctx["reader"]
+            correct_idx = int((reader.get("quiz") or {}).get("answer_idx", 0))
+            already_answered = int(reader.get("quiz_answered", -1)) >= 0
+            db.update_german_daily_progress(
+                reader["date_key"], read_done=True, quiz_answered=choice_idx
+            )
+            if not already_answered:
+                db.log_german_activity(
+                    now.strftime("%Y-%m-%d"),
+                    "read",
+                    correct=(choice_idx == correct_idx),
+                    words_count=int(reader.get("word_count") or 80),
+                    points=20 if choice_idx == correct_idx else 8,
+                    detail=f"quiz:{reader['date_key']}:{choice_idx}",
+                )
+            message = "Quiz answered"
+        except ValueError:
+            pass
+
+    elif act == "deutsch:reader:refresh":
+        await german_svc.get_german_context(settings, now, force_refresh=True)
+        next_screen = "deutsch_read"
+        message = "Refreshed daily graded reader"
 
     pomo = pomodoro_svc.get_pomodoro_view(consume_alert=False)
     refresh_after_sec = pomo["next_tick_sec"] if pomo["is_running"] else 300

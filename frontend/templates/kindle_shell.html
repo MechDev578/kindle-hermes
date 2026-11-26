@@ -296,6 +296,82 @@
       <div class="ls-meta-strip mono">KINDLEHERMES LOCK SCREEN &middot; PLANNING VIEW &middot; {{ bundle.time_str }}</div>
     </div>
 
+  {% elif screen == 'lockscreen_deutsch' %}
+    {# Dedicated A2 -> C2 German Immersion Lock Screen (Separate Slide) #}
+    {% set gm = german.mastery %}
+    {% set wod = german.word_of_day %}
+    {% set dq = german.daily_quote %}
+    {% set teaser = german.teaser_card %}
+    <div class="ls-header">
+      <div class="ls-header-left">
+        <span class="ls-time mono">{{ bundle.time_str }}</span>
+        <span class="ls-date">{{ bundle.date_short }}</span>
+      </div>
+      <div class="ls-header-right">
+        <span class="pill pill-dark mono">DEUTSCH &middot; {{ gm.cefr_label }}</span>
+      </div>
+    </div>
+    <div style="padding:28px 36px;height:1156px;overflow:hidden;">
+      {% if wod %}
+        <div class="ls-hero-card" style="margin-bottom:26px;">
+          <div class="ls-hero-banner">
+            <span style="display:table-cell;text-align:left;">CHUNK &amp; SLANG DES TAGES</span>
+            <span class="mono" style="display:table-cell;text-align:right;">{{ wod.cefr }} &middot; {{ wod.category | upper }}</span>
+          </div>
+          <div class="ls-hero-body" style="padding:26px 28px;">
+            <div class="serif" style="font-size:40px;font-weight:700;line-height:1.22;margin-bottom:14px;">{{ wod.full_de }}</div>
+            <div style="font-size:25px;font-weight:600;color:#222222;margin-bottom:14px;">{{ wod.translation_en }}</div>
+            <div style="border-top:2px solid #000000;padding-top:12px;font-size:21px;line-height:1.35;color:#333333;">
+              <strong>IM GESPR&Auml;CH:</strong> {{ wod.rule_note }}
+            </div>
+          </div>
+        </div>
+      {% endif %}
+
+      {% if dq %}
+        <div class="zone-box" style="border-width:4px;padding:24px 28px;margin-bottom:26px;">
+          <div class="zone-header" style="margin-bottom:14px;">
+            <div class="zone-title">BER&Uuml;HMTES ZITAT &middot; {{ dq.author | upper }}</div>
+            <div class="zone-meta mono">{{ dq.year }} &middot; {{ dq.category | upper }}</div>
+          </div>
+          <div class="serif" style="font-size:34px;font-weight:700;line-height:1.24;margin-bottom:12px;">{{ dq.famous_line }}</div>
+          {% if dq.paragraphs %}
+            <div style="font-size:21px;color:#333333;line-height:1.35;margin-bottom:10px;">{{ dq.paragraphs[0].en }}</div>
+          {% endif %}
+          <div style="font-size:19px;color:#444444;line-height:1.32;">
+            <strong>REFERENZ:</strong> {{ dq.conversation_tip }}
+          </div>
+        </div>
+      {% endif %}
+
+      {% if teaser %}
+        <div class="zone-box" style="background:#EEEEEE;border-width:3px;padding:20px 26px;margin-bottom:0;">
+          <div style="font-size:18px;font-weight:800;letter-spacing:2px;margin-bottom:8px;">
+            GED&Auml;CHTNIS-TEASER &middot; {{ teaser.cefr }} ({{ teaser.category | upper }})
+          </div>
+          <div class="serif" style="font-size:28px;font-weight:700;line-height:1.28;margin-bottom:8px;">{{ teaser.prompt_de }}</div>
+          <div style="font-size:20px;color:#333333;">Hinweis: {{ teaser.hint_en }}</div>
+        </div>
+      {% endif %}
+    </div>
+    <div class="ls-footer" data-action="nav:deutsch" data-label="Open Deutsch Studio">
+      <div style="display:table;width:100%;margin-bottom:8px;">
+        <div class="ls-focus-label" style="display:table-cell;margin:0;">SPRACHINDEX A2 &rarr; C2</div>
+        <div class="mono" style="display:table-cell;text-align:right;font-size:20px;font-weight:800;">
+          {{ gm.total }} / 1000 &middot; NEXT {{ gm.next_band }} ({{ gm.next_band_score }})
+        </div>
+      </div>
+      <div class="seg-bar" style="margin:6px 0 8px;">
+        {% set filled_de = (gm.total // 100) %}
+        {% for i in range(10) %}
+          <div class="seg-cell {% if i < filled_de %}filled{% endif %}" style="height:24px;"></div>
+        {% endfor %}
+      </div>
+      <div class="ls-meta-strip mono" style="margin-top:8px;">
+        KINDLEHERMES DEUTSCH &middot; {{ gm.due_count }} CARDS DUE &middot; STREAK {{ gm.streak_days }}D &middot; {{ gm.classics_read }}/{{ gm.classics_total }} CLASSICS READ
+      </div>
+    </div>
+
   {% else %}
     {# lockscreen_weather #}
     <div class="ls-header">
@@ -365,6 +441,8 @@
     <div class="topbar-cell topbar-left">
       {% if screen == 'home' %}
         <span class="brand-mark">HERMES OS</span>
+      {% elif screen.startswith('deutsch_') %}
+        <button type="button" class="top-nav-btn" data-action="nav:deutsch" data-label="Deutsch Hub">&larr; DEUTSCH</button>
       {% else %}
         <button type="button" class="top-nav-btn" data-action="nav:home" data-label="Home">&larr; HOME</button>
       {% endif %}
@@ -388,7 +466,8 @@
 
     {# -------------------- SCREEN: HOME (App Launcher Grid) -------------------- #}
     {% if screen == 'home' %}
-      <div class="home-hero" data-action="nav:today" data-label="Open Today Dashboard">
+      {% set dense_home = (tiles | length) > 6 %}
+      <div class="home-hero {% if dense_home %}hero-dense{% endif %}" data-action="nav:today" data-label="Open Today Dashboard">
         <div class="home-hero-table">
           <div class="home-hero-left">
             {% if cal.current_event %}
@@ -415,16 +494,17 @@
         </div>
       </div>
 
-      <div class="app-grid">
-        {% for tile in tiles[:6] %}
-          <div class="app-tile {% if loop.index0 % 2 == 0 %}tile-left{% endif %}"
+      <div class="app-grid {% if dense_home %}app-grid-dense{% endif %}">
+        {% for tile in tiles[:8] %}
+          {% set is_last_odd = dense_home and loop.last and (loop.index0 % 2 == 0) %}
+          <div class="app-tile {% if loop.index0 % 2 == 0 and not is_last_odd %}tile-left{% endif %} {% if is_last_odd %}tile-wide{% endif %}"
                data-action="nav:{{ tile.id }}"
                data-label="Open {{ tile.title }}">
             <div class="tile-top">
               <div class="tile-icon">{{ tile.icon_svg | safe }}</div>
               <div class="tile-badge-wrap">
                 {% if tile.badge %}
-                  <span class="pill {% if tile.badge in ('LIVE', 'NOW') %}pill-dark{% endif %} mono">{{ tile.badge }}</span>
+                  <span class="pill {% if tile.badge in ('LIVE', 'NOW') or tile.id == 'deutsch' %}pill-dark{% endif %} mono">{{ tile.badge }}</span>
                 {% endif %}
               </div>
             </div>
@@ -434,9 +514,9 @@
         {% endfor %}
       </div>
 
-      <div class="home-focus-strip">
+      <div class="home-focus-strip {% if dense_home %}focus-dense{% endif %}">
         <span style="font-size:17px;font-weight:800;letter-spacing:2px;text-transform:uppercase;margin-right:12px;">FOCUS:</span>
-        <span class="serif" style="font-size:24px;font-weight:700;">{{ settings.daily_focus or "Stay calm, stay focused, finish what matters." }}</span>
+        <span class="serif" style="font-size:23px;font-weight:700;">{{ settings.daily_focus or "Stay calm, stay focused, finish what matters." }}</span>
       </div>
 
     {# -------------------- SCREEN: TODAY (Unified Dashboard) -------------------- #}
@@ -816,6 +896,498 @@
           &ldquo;{{ briefing.reading_note }}&rdquo;
         </div>
       {% endif %}
+
+    {# ==================== HERMES DEUTSCH APP (A2 -> C2) ==================== #}
+
+    {# -------------------- SCREEN: DEUTSCH HUB -------------------- #}
+    {% elif screen == 'deutsch' %}
+      {% set gm = german.mastery %}
+      {% set wod = german.word_of_day %}
+      <div class="de-score-box">
+        <div style="display:table;width:100%;margin-bottom:10px;">
+          <div style="display:table-cell;vertical-align:middle;">
+            <span class="pill pill-dark mono" style="font-size:24px;padding:7px 16px;">{{ gm.cefr_label }}</span>
+            <span style="font-size:23px;font-weight:800;letter-spacing:1.5px;margin-left:12px;">SPRACHINDEX A2 &rarr; C2</span>
+          </div>
+          <div class="mono" style="display:table-cell;text-align:right;vertical-align:middle;font-size:24px;font-weight:800;">
+            {{ gm.total }} / 1000 &middot; {{ gm.streak_days }}D
+          </div>
+        </div>
+
+        <div class="seg-bar" style="margin:8px 0 6px;">
+          {% set filled_band = (gm.band_pct // 10) %}
+          {% for i in range(10) %}
+            <div class="seg-cell {% if i < filled_band %}filled{% endif %}" style="height:22px;"></div>
+          {% endfor %}
+        </div>
+        <div style="font-size:18px;color:#333333;margin-top:4px;">
+          <strong>NEXT {{ gm.next_band }} ({{ gm.next_band_score }}):</strong> {{ gm.milestone }}
+        </div>
+
+        <div class="de-strand-table">
+          {% for st in gm.strands %}
+            <div class="de-strand-cell">
+              <div style="display:table;width:100%;font-size:16px;font-weight:800;">
+                <span style="display:table-cell;">{{ st.label }}</span>
+                <span class="mono" style="display:table-cell;text-align:right;">{{ st.score }}</span>
+              </div>
+              <div class="de-mini-bar"><div class="de-mini-fill" style="width:{{ st.pct }}%;"></div></div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="de-hub-grid">
+        <div class="de-hub-tile tile-left" data-action="nav:deutsch_drill" data-label="Open FSRS Blitz">
+          <div style="margin-bottom:16px;">
+            <span class="pill pill-dark mono">{{ gm.due_count }} DUE</span>
+            <span class="pill mono" style="margin-left:8px;">FSRS</span>
+          </div>
+          <div style="font-size:32px;font-weight:800;margin-bottom:10px;">FSRS Blitz</div>
+          <div style="font-size:21px;color:#333333;line-height:1.32;">
+            Cloze chunks, <strong>Der/Die/Das</strong> rules, Modalpartikeln &amp; real slang.
+          </div>
+        </div>
+
+        <div class="de-hub-tile" data-action="nav:deutsch_classic" data-label="Open Famous Texts">
+          <div style="margin-bottom:16px;">
+            <span class="pill pill-dark mono">{{ gm.classics_read }} / {{ gm.classics_total }} READ</span>
+          </div>
+          <div style="font-size:32px;font-weight:800;margin-bottom:10px;">Ber&uuml;hmte Texte</div>
+          <div style="font-size:21px;color:#333333;line-height:1.32;">
+            Brandt, Schmidt, Goethe, Hesse, Kafka, Loriot &mdash; plus how to drop them in chat.
+          </div>
+        </div>
+
+        <div class="de-hub-tile tile-left" data-action="nav:deutsch_read" data-label="Open Daily Reader">
+          <div style="margin-bottom:16px;">
+            <span class="pill mono">{{ german.reader.cefr }} &middot; i+1</span>
+            {% if german.reader.read_done %}<span class="pill pill-dark mono" style="margin-left:8px;">DONE</span>{% endif %}
+          </div>
+          <div style="font-size:32px;font-weight:800;margin-bottom:10px;">Tageslekt&uuml;re</div>
+          <div style="font-size:21px;color:#333333;line-height:1.32;">
+            {{ german.reader.title[:58] }}{% if german.reader.title|length > 58 %}...{% endif %}
+          </div>
+        </div>
+
+        <div class="de-hub-tile" data-action="nav:deutsch_root" data-label="Open Root and Slang">
+          <div style="margin-bottom:16px;">
+            <span class="pill mono">{{ german.root_pack.root }}</span>
+            <span class="pill mono" style="margin-left:8px;">A2 &rarr; C2</span>
+          </div>
+          <div style="font-size:32px;font-weight:800;margin-bottom:10px;">Wurzel &amp; Slang</div>
+          <div style="font-size:21px;color:#333333;line-height:1.32;">
+            Verb-prefix trees, A2&rarr;C2 register ladders &amp; everyday Umgangssprache.
+          </div>
+        </div>
+      </div>
+
+      {% if wod %}
+        <div class="zone-box" style="background:#EEEEEE;border-width:4px;margin-bottom:0;padding:18px 24px;" data-action="nav:deutsch_drill" data-label="Practice Today Deck">
+          <div class="zone-header" style="margin-bottom:10px;padding-bottom:8px;">
+            <div class="zone-title">CHUNK &amp; SLANG DES TAGES</div>
+            <div class="zone-meta mono">{{ wod.cefr }} &middot; {{ wod.category | upper }}</div>
+          </div>
+          <div class="serif" style="font-size:29px;font-weight:700;line-height:1.25;margin-bottom:8px;">{{ wod.full_de }}</div>
+          <div style="font-size:21px;color:#222222;margin-bottom:8px;">{{ wod.translation_en }}</div>
+          <div style="font-size:19px;color:#444444;line-height:1.3;">{{ wod.rule_note[:145] }}{% if wod.rule_note|length > 145 %}...{% endif %}</div>
+        </div>
+      {% endif %}
+
+    {# -------------------- SCREEN: DEUTSCH FSRS DRILL -------------------- #}
+    {% elif screen == 'deutsch_drill' %}
+      {% set card = deutsch_card_override if deutsch_card_override is defined else german.active_card %}
+      {% set flipped = deutsch_flipped_override if deutsch_flipped_override is defined else german.drill_flipped %}
+      {% set card_pos = deutsch_card_pos if deutsch_card_pos is defined else 1 %}
+      {% set deck_total = deutsch_deck_total if deutsch_deck_total is defined else (german.deck | length) %}
+      {% set is_done = deutsch_deck_done if deutsch_deck_done is defined else (card is none) %}
+      {% set choice = german.drill_choice if (deutsch_flipped_override is not defined) else '' %}
+
+      {% if is_done or not card %}
+        <div class="de-card-stage" style="text-align:center;padding-top:160px;">
+          <div style="margin-bottom:24px;"><span class="pill pill-dark mono" style="font-size:24px;padding:10px 22px;">SESSION COMPLETE</span></div>
+          <div class="serif" style="font-size:48px;font-weight:700;margin-bottom:18px;">Stark gemacht!</div>
+          <div style="font-size:26px;color:#333333;line-height:1.4;margin-bottom:44px;">
+            You finished today&rsquo;s offline FSRS deck.<br>Tap SYNC on Wi-Fi to update your Sprachindex &amp; pull fresh cards.
+          </div>
+          <div class="btn-row">
+            <div class="btn-row-cell">
+              <button type="button" class="big-btn btn-solid" data-action="nav:deutsch" data-label="Back to Deutsch">BACK TO DEUTSCH</button>
+            </div>
+            <div class="btn-row-cell">
+              <button type="button" class="big-btn" data-action="nav:deutsch_classic" data-label="Read Famous Texts">BER&Uuml;HMTE TEXTE</button>
+            </div>
+          </div>
+        </div>
+      {% else %}
+        <div style="margin-bottom:16px;">
+          <div style="display:table;width:100%;margin-bottom:8px;">
+            <div class="mono" style="display:table-cell;font-size:21px;font-weight:800;">
+              CARD {{ card_pos }} OF {{ deck_total if deck_total > 0 else 1 }} &middot; {{ card.kind | upper }}
+            </div>
+            <div style="display:table-cell;text-align:right;">
+              <span class="pill pill-dark mono">{{ card.cefr }}</span>
+              <span class="pill mono" style="margin-left:8px;">{{ card.category | upper }}</span>
+            </div>
+          </div>
+          <div class="seg-bar" style="margin:6px 0 0;">
+            {% set filled_c = ((card_pos * 10) // (deck_total if deck_total > 0 else 1)) %}
+            {% for i in range(10) %}
+              <div class="seg-cell {% if i < filled_c %}filled{% endif %}" style="height:18px;"></div>
+            {% endfor %}
+          </div>
+        </div>
+
+        {% if not flipped %}
+          <div class="de-card-stage">
+            <div style="margin-bottom:14px;">
+              <span class="pill mono">
+                {% if card.kind == 'gender' %}GENUS-BLITZ &middot; DER / DIE / DAS{% else %}ACTIVE RECALL &middot; FILL THE GAP{% endif %}
+              </span>
+            </div>
+            <div class="de-card-prompt serif">{{ card.prompt_de }}</div>
+            <div class="de-rule-box">
+              <div style="font-size:17px;font-weight:800;letter-spacing:1.5px;margin-bottom:6px;">HINWEIS / CONTEXT CLUE</div>
+              <div style="font-size:25px;font-weight:600;line-height:1.35;">{{ card.hint_en }}</div>
+            </div>
+            <div style="position:absolute;left:36px;right:36px;bottom:32px;font-size:19px;color:#555555;">
+              Say the complete German sentence aloud in your head before revealing &mdash; retrieval effort creates memory!
+            </div>
+          </div>
+
+          {% if card.kind == 'gender' %}
+            <div class="btn-row" style="margin-bottom:0;">
+              <div class="btn-row-cell">
+                <button type="button" class="big-btn" style="height:110px;line-height:102px;font-size:34px;" data-action="deutsch:guess:der" data-label="Der">DER</button>
+              </div>
+              <div class="btn-row-cell">
+                <button type="button" class="big-btn" style="height:110px;line-height:102px;font-size:34px;" data-action="deutsch:guess:die" data-label="Die">DIE</button>
+              </div>
+              <div class="btn-row-cell">
+                <button type="button" class="big-btn" style="height:110px;line-height:102px;font-size:34px;" data-action="deutsch:guess:das" data-label="Das">DAS</button>
+              </div>
+            </div>
+          {% else %}
+            <button type="button" class="big-btn btn-solid" style="height:110px;line-height:102px;font-size:28px;" data-action="deutsch:reveal" data-label="Reveal Answer">
+              REVEAL ANSWER
+            </button>
+          {% endif %}
+
+        {% else %}
+          <div class="de-card-stage">
+            {% if choice %}
+              {% set is_right = (choice | lower) == (card.answer_de | lower) %}
+              <div class="pill {% if is_right %}pill-dark{% endif %} mono" style="font-size:22px;padding:8px 18px;margin-bottom:18px;">
+                {% if is_right %}&#10003; RICHTIG! ({{ card.answer_de | upper }}){% else %}&#10007; DU HAST &bdquo;{{ choice | upper }}&ldquo; GEW&Auml;HLT &mdash; RICHTIG: {{ card.answer_de | upper }}{% endif %}
+              </div>
+            {% endif %}
+            <div>
+              <span class="pill pill-dark mono" style="font-size:28px;padding:10px 22px;">{{ card.answer_de }}</span>
+            </div>
+            <div class="serif" style="font-size:36px;font-weight:700;line-height:1.28;margin:24px 0 14px;">
+              {{ card.full_de }}
+            </div>
+            <div style="font-size:25px;color:#222222;line-height:1.35;margin-bottom:20px;">
+              {{ card.translation_en }}
+            </div>
+            <div class="de-rule-box">
+              <div style="font-size:17px;font-weight:800;letter-spacing:1.5px;margin-bottom:8px;">MERKREGEL &amp; IM GESPR&Auml;CH</div>
+              <div style="font-size:23px;line-height:1.4;">{{ card.rule_note }}</div>
+            </div>
+          </div>
+
+          <div class="btn-row" style="margin-bottom:0;">
+            <div class="btn-row-cell">
+              <button type="button" class="de-rate-btn" data-action="deutsch:rate:{{ card.id }}:1" data-label="Again">
+                <div class="de-rate-title">AGAIN</div>
+                <div class="de-rate-sub mono">{{ card.intervals['1'] }}</div>
+              </button>
+            </div>
+            <div class="btn-row-cell">
+              <button type="button" class="de-rate-btn" data-action="deutsch:rate:{{ card.id }}:2" data-label="Hard">
+                <div class="de-rate-title">HARD</div>
+                <div class="de-rate-sub mono">{{ card.intervals['2'] }}</div>
+              </button>
+            </div>
+            <div class="btn-row-cell">
+              <button type="button" class="de-rate-btn btn-solid" data-action="deutsch:rate:{{ card.id }}:3" data-label="Good">
+                <div class="de-rate-title">GOOD</div>
+                <div class="de-rate-sub mono">{{ card.intervals['3'] }}</div>
+              </button>
+            </div>
+            <div class="btn-row-cell">
+              <button type="button" class="de-rate-btn" data-action="deutsch:rate:{{ card.id }}:4" data-label="Easy">
+                <div class="de-rate-title">EASY</div>
+                <div class="de-rate-sub mono">{{ card.intervals['4'] }}</div>
+              </button>
+            </div>
+          </div>
+        {% endif %}
+      {% endif %}
+
+    {# -------------------- SCREEN: BERÜHMTE TEXTE (3 MODES) -------------------- #}
+    {% elif screen in ('deutsch_classic', 'deutsch_classic_parallel', 'deutsch_classic_xray') %}
+      {% set cl = deutsch_classic_override if deutsch_classic_override is defined else german.active_classic %}
+      {% set cl_pos = deutsch_classic_pos if deutsch_classic_pos is defined else (german.classic_idx + 1) %}
+      {% set cl_tot = deutsch_classic_total if deutsch_classic_total is defined else german.classic_total %}
+
+      <div style="border-bottom:4px solid #000000;padding-bottom:12px;margin-bottom:14px;">
+        <div style="display:table;width:100%;">
+          <div style="display:table-cell;vertical-align:middle;">
+            <div style="font-size:21px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;">
+              {{ cl.author }} {% if cl.year %}&middot; {{ cl.year }}{% endif %}
+            </div>
+            <div class="serif" style="font-size:32px;font-weight:700;line-height:1.15;margin-top:4px;">{{ cl.title }}</div>
+          </div>
+          <div style="display:table-cell;text-align:right;vertical-align:middle;width:270px;">
+            <span class="pill pill-dark mono">{{ cl.cefr }}</span>
+            <span class="pill mono" style="margin-left:6px;">{{ cl_pos }}/{{ cl_tot }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="btn-row" style="margin-bottom:14px;">
+        <div class="btn-row-cell">
+          <button type="button" class="de-tab-btn {% if screen == 'deutsch_classic' %}btn-solid{% endif %}" data-action="nav:deutsch_classic" data-label="DE and Gloss">DE + GLOSS</button>
+        </div>
+        <div class="btn-row-cell">
+          <button type="button" class="de-tab-btn {% if screen == 'deutsch_classic_parallel' %}btn-solid{% endif %}" data-action="nav:deutsch_classic_parallel" data-label="Parallel Translation">PARALLEL DE|EN</button>
+        </div>
+        <div class="btn-row-cell">
+          <button type="button" class="de-tab-btn {% if screen == 'deutsch_classic_xray' %}btn-solid{% endif %}" data-action="nav:deutsch_classic_xray" data-label="Grammar X-Ray">X-RAY &amp; TALK</button>
+        </div>
+      </div>
+
+      <div class="de-reading-body">
+        {% if screen == 'deutsch_classic' %}
+          <div style="border-left:6px solid #000000;background:#EEEEEE;padding:12px 18px;margin-bottom:18px;">
+            <div style="font-size:15px;font-weight:800;letter-spacing:1.5px;">SCHL&Uuml;SSELZITAT</div>
+            <div class="serif" style="font-size:26px;font-weight:700;margin-top:4px;">{{ cl.famous_line }}</div>
+          </div>
+          {% for p in cl.paragraphs[:3] %}
+            <div class="de-para serif">{{ p.de }}</div>
+          {% endfor %}
+          {% if cl.glosses %}
+            <div class="de-gloss-grid">
+              {% set mid = ((cl.glosses | length) + 1) // 2 %}
+              <div class="de-gloss-col">
+                {% for g in cl.glosses[:mid] %}
+                  <div style="font-size:19px;line-height:1.35;margin-bottom:6px;">
+                    <strong>{{ g.num }}. {{ g.term }}</strong> {% if g.article_info %}<span style="color:#555555;">({{ g.article_info }})</span>{% endif %} &mdash; {{ g.en }}
+                  </div>
+                {% endfor %}
+              </div>
+              <div class="de-gloss-col">
+                {% for g in cl.glosses[mid:] %}
+                  <div style="font-size:19px;line-height:1.35;margin-bottom:6px;">
+                    <strong>{{ g.num }}. {{ g.term }}</strong> {% if g.article_info %}<span style="color:#555555;">({{ g.article_info }})</span>{% endif %} &mdash; {{ g.en }}
+                  </div>
+                {% endfor %}
+              </div>
+            </div>
+          {% endif %}
+
+        {% elif screen == 'deutsch_classic_parallel' %}
+          <div style="font-size:17px;font-weight:800;letter-spacing:1.5px;border-bottom:2px solid #000000;padding-bottom:8px;margin-bottom:8px;">
+            ORIGINAL DEUTSCH &nbsp;|&nbsp; NATURAL ENGLISH &amp; NUANCE
+          </div>
+          {% for p in cl.paragraphs[:3] %}
+            <div class="de-parallel-row">
+              <div class="de-parallel-de serif">{{ p.de }}</div>
+              <div class="de-parallel-en">
+                <div>{{ p.en }}</div>
+                {% if p.literal %}
+                  <div style="font-size:17px;color:#555555;margin-top:8px;font-style:italic;">{{ p.literal }}</div>
+                {% endif %}
+              </div>
+            </div>
+          {% endfor %}
+
+        {% else %}
+          <div class="zone-box" style="background:#EEEEEE;border-width:4px;padding:18px 22px;margin-bottom:18px;">
+            <div style="font-size:17px;font-weight:800;letter-spacing:2px;margin-bottom:6px;">DROP IT IN CONVERSATION (IM GESPR&Auml;CH NUTZEN)</div>
+            <div class="serif" style="font-size:25px;font-weight:700;line-height:1.32;">{{ cl.conversation_tip }}</div>
+          </div>
+
+          <div style="font-size:18px;font-weight:800;letter-spacing:2px;border-bottom:2px solid #000000;padding-bottom:8px;margin-bottom:12px;">
+            GRAMMAR X-RAY (SCHMIDT&rsquo;S NOTICING)
+          </div>
+          {% for x in cl.xray[:3] %}
+            <div style="border-bottom:2px solid #CCCCCC;padding:12px 0;">
+              <div>
+                <span class="pill pill-dark mono" style="font-size:15px;">{{ x.tag }}</span>
+                <span class="serif" style="font-size:24px;font-weight:700;margin-left:10px;">&bdquo;{{ x.snippet }}&ldquo;</span>
+              </div>
+              <div style="font-size:21px;color:#222222;line-height:1.35;margin-top:6px;">{{ x.note }}</div>
+            </div>
+          {% endfor %}
+
+          {% if cl.mine_cards %}
+            <div style="margin-top:20px;">
+              <button type="button" class="big-btn {% if not cl.mined %}btn-solid{% endif %}" style="height:82px;line-height:74px;font-size:22px;" data-action="deutsch:classic:mine:{{ cl.id }}" data-label="Mine Chunks">
+                {% if cl.mined %}&#10003; CHUNKS IN FSRS DECK (TAP TO RE-SYNC){% else %}+ MINE {{ cl.mine_cards | length }} KEY CHUNKS INTO FSRS{% endif %}
+              </button>
+            </div>
+          {% endif %}
+        {% endif %}
+      </div>
+
+      <div class="btn-row" style="margin-bottom:0;">
+        <div class="btn-row-cell" style="width:28%;">
+          <button type="button" class="big-btn" style="height:82px;line-height:74px;font-size:22px;" data-action="deutsch:classic:prev" data-label="Prev Text">&larr; PREV</button>
+        </div>
+        <div class="btn-row-cell" style="width:44%;">
+          <button type="button" class="big-btn {% if cl.read_count > 0 %}btn-solid{% endif %}" style="height:82px;line-height:74px;font-size:21px;" data-action="deutsch:classic:read:{{ cl.id }}" data-label="Mark Read">
+            {% if cl.read_count > 0 %}&#10003; READ ({{ cl.read_count }}&times;) +15 PTS{% else %}&#10003; MARK READ (+15 PTS){% endif %}
+          </button>
+        </div>
+        <div class="btn-row-cell" style="width:28%;">
+          <button type="button" class="big-btn" style="height:82px;line-height:74px;font-size:22px;" data-action="deutsch:classic:next" data-label="Next Text">NEXT &rarr;</button>
+        </div>
+      </div>
+
+    {# -------------------- SCREEN: TAGESLEKTÜRE (DAILY i+1 READER) -------------------- #}
+    {% elif screen in ('deutsch_read', 'deutsch_read_parallel') %}
+      {% set rd = german.reader %}
+      <div style="border-bottom:4px solid #000000;padding-bottom:10px;margin-bottom:14px;">
+        <div style="display:table;width:100%;">
+          <div style="display:table-cell;">
+            <span class="pill pill-dark mono">{{ rd.cefr }}</span>
+            <span style="font-size:18px;font-weight:800;letter-spacing:1.5px;margin-left:10px;">TAGESLEKT&Uuml;RE &middot; {{ rd.topic | upper }}</span>
+          </div>
+          <div class="mono" style="display:table-cell;text-align:right;font-size:18px;font-weight:700;">{{ rd.word_count }} W&Ouml;RTER</div>
+        </div>
+        <div class="serif" style="font-size:30px;font-weight:700;line-height:1.18;margin-top:8px;">{{ rd.title }}</div>
+      </div>
+
+      <div class="btn-row" style="margin-bottom:14px;">
+        <div class="btn-row-cell">
+          <button type="button" class="de-tab-btn {% if screen == 'deutsch_read' %}btn-solid{% endif %}" data-action="nav:deutsch_read" data-label="German Text">DE + GLOSS</button>
+        </div>
+        <div class="btn-row-cell">
+          <button type="button" class="de-tab-btn {% if screen == 'deutsch_read_parallel' %}btn-solid{% endif %}" data-action="nav:deutsch_read_parallel" data-label="Parallel Text">PARALLEL DE|EN</button>
+        </div>
+        <div class="btn-row-cell">
+          <button type="button" class="de-tab-btn" data-action="deutsch:read_done" data-label="Mark Read">{% if rd.read_done %}&#10003; GELESEN{% else %}&#10003; MARK READ{% endif %}</button>
+        </div>
+      </div>
+
+      <div class="zone-box" style="height:644px;overflow:hidden;margin-bottom:14px;padding:18px 22px;">
+        {% if screen == 'deutsch_read' %}
+          {% for p in rd.paragraphs[:3] %}
+            <div class="serif" style="font-size:24px;line-height:1.4;margin-bottom:14px;">{{ p.de }}</div>
+          {% endfor %}
+          {% if rd.glosses %}
+            <div class="de-gloss-grid" style="margin-top:10px;padding-top:10px;">
+              {% set gmid = ((rd.glosses | length) + 1) // 2 %}
+              <div class="de-gloss-col">
+                {% for g in rd.glosses[:gmid] %}
+                  <div style="font-size:18px;margin-bottom:4px;"><strong>{{ g.num }}. {{ g.term }}</strong> &mdash; {{ g.en }}</div>
+                {% endfor %}
+              </div>
+              <div class="de-gloss-col">
+                {% for g in rd.glosses[gmid:] %}
+                  <div style="font-size:18px;margin-bottom:4px;"><strong>{{ g.num }}. {{ g.term }}</strong> &mdash; {{ g.en }}</div>
+                {% endfor %}
+              </div>
+            </div>
+          {% endif %}
+        {% else %}
+          {% for p in rd.paragraphs[:3] %}
+            <div class="de-parallel-row" style="padding:10px 0;">
+              <div class="de-parallel-de serif" style="font-size:20px;">{{ p.de }}</div>
+              <div class="de-parallel-en" style="font-size:19px;">{{ p.en }}</div>
+            </div>
+          {% endfor %}
+        {% endif %}
+      </div>
+
+      {% if rd.quiz %}
+        <div class="zone-box" style="background:#EEEEEE;margin-bottom:0;padding:14px 20px;">
+          <div style="font-size:17px;font-weight:800;letter-spacing:1.5px;margin-bottom:8px;">VERST&Auml;NDNIS-CHECK: {{ rd.quiz.question }}</div>
+          {% for opt in rd.quiz.options[:3] %}
+            <button type="button"
+                    class="de-quiz-opt {% if rd.quiz_answered == loop.index0 %}selected{% endif %}"
+                    style="min-height:66px;padding:10px 16px;margin-bottom:8px;font-size:20px;"
+                    data-action="deutsch:quiz:{{ loop.index0 }}"
+                    data-label="Quiz Option {{ loop.index }}">
+              {{ opt }}
+            </button>
+          {% endfor %}
+          {% if rd.quiz_answered >= 0 %}
+            <div style="font-size:19px;font-weight:700;margin-top:4px;">{{ rd.quiz.explanation }}</div>
+          {% endif %}
+        </div>
+      {% endif %}
+
+    {# -------------------- SCREEN: WORT, WURZEL & SLANG -------------------- #}
+    {% elif screen == 'deutsch_root' %}
+      {% set rp = deutsch_root_override if deutsch_root_override is defined else german.root_pack %}
+      {% set rpos = deutsch_root_pos if deutsch_root_pos is defined else (german.root_idx + 1) %}
+      {% set rtot = deutsch_root_total if deutsch_root_total is defined else german.root_total %}
+
+      <div class="btn-row" style="margin-bottom:16px;">
+        <div class="btn-row-cell" style="width:24%;">
+          <button type="button" class="de-tab-btn" data-action="deutsch:root:prev" data-label="Prev Root">&larr; PREV</button>
+        </div>
+        <div class="btn-row-cell" style="width:52%;text-align:center;vertical-align:middle;">
+          <div class="mono" style="font-size:24px;font-weight:800;">WURZEL: {{ rp.root }} ({{ rpos }}/{{ rtot }})</div>
+          <div style="font-size:18px;color:#444444;">Core verb: {{ rp.core_meaning }}</div>
+        </div>
+        <div class="btn-row-cell" style="width:24%;">
+          <button type="button" class="de-tab-btn" data-action="deutsch:root:next" data-label="Next Root">NEXT &rarr;</button>
+        </div>
+      </div>
+
+      <div class="zone-box" style="padding:16px 22px;margin-bottom:16px;">
+        <div class="zone-header" style="margin-bottom:12px;padding-bottom:8px;">
+          <div class="zone-title">VERB-PREFIX MULTIPLIER (1 ROOT &rarr; 6 VERBS)</div>
+          <div class="zone-meta mono">{{ rp.root }}</div>
+        </div>
+        <div class="de-root-grid">
+          {% for b in rp.branches[:6] %}
+            <div class="de-root-card {% if loop.index0 % 2 == 0 %}left{% endif %}">
+              <div style="display:table;width:100%;">
+                <div style="display:table-cell;font-size:22px;font-weight:800;">{{ b.verb }}</div>
+                <div class="mono" style="display:table-cell;text-align:right;font-size:14px;font-weight:700;color:#444444;">{{ 'TRENNBAR' if b.sep else 'FEST' }}</div>
+              </div>
+              <div style="font-size:18px;color:#222222;margin-top:2px;">{{ b.en }}</div>
+              <div class="serif" style="font-size:17px;color:#444444;margin-top:3px;">&bdquo;{{ b.ex }}&ldquo;</div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="zone-box" style="padding:16px 22px;margin-bottom:16px;">
+        <div class="zone-header" style="margin-bottom:10px;padding-bottom:8px;">
+          <div class="zone-title">A2 &rarr; C2 REGISTER LADDER</div>
+          <div class="zone-meta">{{ rp.ladder_topic | upper }}</div>
+        </div>
+        {% for row in rp.ladder %}
+          <div class="de-ladder-row">
+            <div style="display:table-cell;width:78px;vertical-align:top;">
+              <span class="pill {% if row.level in ('C1', 'C2') %}pill-dark{% endif %} mono" style="font-size:16px;padding:3px 10px;">{{ row.level }}</span>
+            </div>
+            <div class="serif" style="display:table-cell;font-size:21px;line-height:1.28;vertical-align:top;">{{ row.de }}</div>
+          </div>
+        {% endfor %}
+      </div>
+
+      <div class="zone-box" style="background:#EEEEEE;padding:16px 22px;margin-bottom:0;">
+        <div class="zone-header" style="margin-bottom:10px;padding-bottom:8px;">
+          <div class="zone-title">ALLTAGSSLANG &amp; UMGANGSSPRACHE</div>
+          <div class="zone-meta mono">BLEND IN LIKE A LOCAL</div>
+        </div>
+        <div style="display:table;width:100%;table-layout:fixed;">
+          {% for sl in rp.slang_items[:3] %}
+            <div class="de-slang-cell">
+              <div class="serif" style="font-size:24px;font-weight:700;margin-bottom:4px;">&bdquo;{{ sl.term }}&ldquo;</div>
+              <div style="font-size:18px;font-weight:700;margin-bottom:4px;">{{ sl.meaning }}</div>
+              <div style="font-size:17px;color:#333333;line-height:1.28;">{{ sl.usage }}</div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
     {% endif %}
 
   </div>

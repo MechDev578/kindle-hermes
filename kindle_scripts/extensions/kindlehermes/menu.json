@@ -1,0 +1,32 @@
+{
+  "items": [
+    {
+      "name": "KindleHermes OS",
+      "priority": 1,
+      "items": [
+        {
+          "name": "Launch Hermes OS (Fullscreen App)",
+          "priority": 1,
+          "action": "bin/launch_hermes.sh",
+          "exitmenu": true,
+          "status": false
+        },
+        {
+          "name": "Sync Lock Screen Slides Now",
+          "priority": 2,
+          "action": "bin/sync_lockscreen.sh",
+          "exitmenu": false,
+          "status": true
+        },
+        {
+          "name": "Sync & Display Lock Screen (FBInk)",
+          "priority": 3,
+          "action": "bin/sync_lockscreen.sh",
+          "params": "--paint",
+          "exitmenu": true,
+          "status": false
+        }
+      ]
+    }
+  ]
+}

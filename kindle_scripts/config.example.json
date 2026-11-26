@@ -1,0 +1,14 @@
+{
+  "server_url": "https://your-hermes-server.up.railway.app",
+  "token": "replace-with-your-hermes-token",
+  "local_server_url": "http://192.168.1.50:8000",
+  "local_token": "",
+  "sync_mode": "cloud_first",
+  "cache_dir": "/mnt/us/kindlehermes/cache",
+  "fbink_bin": "/mnt/us/libkh/bin/fbink",
+  "touch_device": "",
+  "swap_xy": false,
+  "invert_x": false,
+  "invert_y": false,
+  "insecure_tls": false
+}
