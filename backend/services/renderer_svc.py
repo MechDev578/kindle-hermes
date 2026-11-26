@@ -53,7 +53,7 @@ def _quantize_eink_grayscale(raw_png: bytes) -> bytes:
         # Snap to 16 crisp e-ink grayscale levels without dithering text
         quantized = gray.point(lambda p: (p // 17) * 17)
         out = io.BytesIO()
-        quantized.save(out, format="PNG", optimize=True)
+        quantized.save(out, format="PNG", compress_level=6)
         return out.getvalue()
 
 
@@ -210,8 +210,10 @@ class EinkRenderer:
                 return RenderedScreen(png_bytes=png_bytes, hitboxes=[], etag=etag, layout={})
 
     async def render_batch(self, html_items: list[tuple[str, str]]) -> dict[str, RenderedScreen]:
-        """Render multiple HTML screens reusing one warm browser context for fast offline bundles."""
+        """Render multiple HTML screens concurrently across a bounded pool of pages for fast offline bundles."""
         results: dict[str, RenderedScreen] = {}
+        if not html_items:
+            return results
         async with self._lock:
             try:
                 browser = await self._ensure_browser()
@@ -219,24 +221,42 @@ class EinkRenderer:
                     viewport={"width": KINDLE_WIDTH, "height": KINDLE_HEIGHT},
                     device_scale_factor=1,
                 )
-                page = await context.new_page()
+                worker_count = min(4, len(html_items))
+                queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+                for item in html_items:
+                    queue.put_nowait(item)
+
+                async def _worker() -> None:
+                    page = await context.new_page()
+                    try:
+                        while True:
+                            try:
+                                key, html = queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                break
+                            try:
+                                await page.set_content(html, wait_until="load")
+                                hitboxes, layout = await self._extract_page_meta(page)
+                                raw_png = await page.screenshot(
+                                    type="png",
+                                    clip={"x": 0, "y": 0, "width": KINDLE_WIDTH, "height": KINDLE_HEIGHT},
+                                )
+                                png_bytes = await asyncio.to_thread(_quantize_eink_grayscale, raw_png)
+                                etag = hashlib.sha256(png_bytes).hexdigest()[:16]
+                                self._store_cached_png(etag, png_bytes)
+                                results[key] = RenderedScreen(
+                                    png_bytes=png_bytes,
+                                    hitboxes=hitboxes,
+                                    etag=etag,
+                                    layout=layout,
+                                )
+                            finally:
+                                queue.task_done()
+                    finally:
+                        await page.close()
+
                 try:
-                    for key, html in html_items:
-                        await page.set_content(html, wait_until="load")
-                        hitboxes, layout = await self._extract_page_meta(page)
-                        raw_png = await page.screenshot(
-                            type="png",
-                            clip={"x": 0, "y": 0, "width": KINDLE_WIDTH, "height": KINDLE_HEIGHT},
-                        )
-                        png_bytes = _quantize_eink_grayscale(raw_png)
-                        etag = hashlib.sha256(png_bytes).hexdigest()[:16]
-                        self._store_cached_png(etag, png_bytes)
-                        results[key] = RenderedScreen(
-                            png_bytes=png_bytes,
-                            hitboxes=hitboxes,
-                            etag=etag,
-                            layout=layout,
-                        )
+                    await asyncio.gather(*(_worker() for _ in range(worker_count)))
                 finally:
                     await context.close()
             except Exception as exc:

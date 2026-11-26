@@ -242,3 +242,134 @@ func TestOfflineStoreBundleTimeSlotsOutboxAndFailover(t *testing.T) {
 		t.Fatalf("expected empty outbox after flush, got %d", store.OutboxCount())
 	}
 }
+
+func TestOfflineDeutschDeckClassicsRootsAndQuiz(t *testing.T) {
+	dir := t.TempDir()
+	store := NewOfflineStore(dir, filepath.Join(dir, "fallback.png"))
+	whitePNG := makeDummyGrayPNG(t, 255)
+
+	manifest := BundleManifest{
+		Version:           2,
+		SyncedAtUnix:      1764140000,
+		SyncedAtLabel:     "18:30",
+		LockscreenMode:    "smart",
+		LockscreenDefault: "lockscreens/default.png",
+		Screens: map[string]CachedScreen{
+			"home":         {File: "screens/home.png"},
+			"deutsch":      {File: "screens/deutsch.png"},
+			"deutsch_read": {File: "screens/deutsch_read.png"},
+		},
+		Deutsch: &DeutschBundle{
+			CEFRLabel:    "A2.2",
+			Sprachindex:  220,
+			ClassicTotal: 15,
+			Deck: []DeutschCard{
+				{
+					ID:            10,
+					Kind:          "gender",
+					CEFR:          "A2",
+					AnswerDE:      "die",
+					FullDE:        "die Entscheidung",
+					FrontFile:     "deutsch/card_10_front.png",
+					BackFile:      "deutsch/card_10_back.png",
+					FrontHitboxes: []Hitbox{{Action: "deutsch:guess:die", X: 360, Y: 1100, W: 300, H: 110}},
+					BackHitboxes:  []Hitbox{{Action: "deutsch:rate:10:3", X: 520, Y: 1100, W: 240, H: 108}},
+				},
+			},
+			DeckDoneFile:     "deutsch/deck_done.png",
+			DeckDoneHitboxes: []Hitbox{{Action: "nav:deutsch", X: 40, Y: 800, W: 450, H: 92}},
+			Classics: []DeutschClassic{
+				{ID: 1, Idx: 0, Author: "Willy Brandt", Title: "Mehr Demokratie wagen", GlossFile: "deutsch/c1_g.png", ParallelFile: "deutsch/c1_p.png", XrayFile: "deutsch/c1_x.png"},
+				{ID: 2, Idx: 1, Author: "Loriot", Title: "Lametta", GlossFile: "deutsch/c2_g.png", ParallelFile: "deutsch/c2_p.png", XrayFile: "deutsch/c2_x.png"},
+			},
+			Roots: []DeutschRoot{
+				{Idx: 0, Root: "STEHEN", File: "deutsch/r0.png"},
+				{Idx: 1, Root: "KOMMEN", File: "deutsch/r1.png"},
+			},
+			ReaderQuizAnswerIdx: 0,
+		},
+	}
+	mRaw, _ := json.Marshal(manifest)
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	add := func(name string, data []byte) {
+		w, _ := zw.Create(name)
+		_, _ = w.Write(data)
+	}
+	add("manifest.json", mRaw)
+	for _, f := range []string{
+		"screens/home.png", "screens/deutsch.png", "screens/deutsch_read.png",
+		"lockscreens/default.png",
+		"deutsch/card_10_front.png", "deutsch/card_10_back.png", "deutsch/deck_done.png",
+		"deutsch/c1_g.png", "deutsch/c1_p.png", "deutsch/c1_x.png",
+		"deutsch/c2_g.png", "deutsch/c2_p.png", "deutsch/c2_x.png",
+		"deutsch/r0.png", "deutsch/r1.png",
+	} {
+		add(f, whitePNG)
+	}
+	_ = zw.Close()
+
+	if _, err := store.ExtractBundleZip(buf.Bytes()); err != nil {
+		t.Fatalf("ExtractBundleZip deutsch failed: %v", err)
+	}
+
+	// Front -> Guess 'die' -> Back -> Rate '3' -> Deck Done
+	_, pFront, ok := store.GetScreen("deutsch_drill")
+	if !ok || filepath.Base(pFront) != "card_10_front.png" {
+		t.Fatalf("expected card_10_front.png, got %s", pFront)
+	}
+	right, ans := store.DeutschGuess("die")
+	if !right || ans != "die" {
+		t.Fatalf("expected right=true ans=die, got %v %q", right, ans)
+	}
+	_, pBack, ok := store.GetScreen("deutsch_drill")
+	if !ok || filepath.Base(pBack) != "card_10_back.png" {
+		t.Fatalf("expected card_10_back.png, got %s", pBack)
+	}
+	store.DeutschRateCard(10, 3)
+	_, pDone, ok := store.GetScreen("deutsch_drill")
+	if !ok || filepath.Base(pDone) != "deck_done.png" {
+		t.Fatalf("expected deck_done.png after last card, got %s", pDone)
+	}
+
+	// Classics 3-mode swap & stepping (and advancing server bookmark past offline slice)
+	_, pPar, ok := store.GetScreen("deutsch_classic_parallel")
+	if !ok || filepath.Base(pPar) != "c1_p.png" {
+		t.Fatalf("expected c1_p.png, got %s", pPar)
+	}
+	if wrapped := store.DeutschStepClassic(1); wrapped {
+		t.Fatalf("expected first step not to wrap")
+	}
+	_, pXray2, ok := store.GetScreen("deutsch_classic_xray")
+	if !ok || filepath.Base(pXray2) != "c2_x.png" {
+		t.Fatalf("expected c2_x.png, got %s", pXray2)
+	}
+	if wrapped := store.DeutschStepClassic(1); !wrapped {
+		t.Fatalf("expected stepping past last bundled classic to signal wrap-for-more")
+	}
+
+	// Root stepping & quiz check
+	store.DeutschStepRoot(1)
+	_, pRoot, ok := store.GetScreen("deutsch_root")
+	if !ok || filepath.Base(pRoot) != "r1.png" {
+		t.Fatalf("expected r1.png, got %s", pRoot)
+	}
+	if !store.DeutschCheckQuiz(0) {
+		t.Fatalf("expected quiz choice 0 to be correct")
+	}
+	// Outbox should have 4 deduplicated actions: rate + classic:set:2 + root:set:1 + quiz:0
+	if store.OutboxCount() != 4 {
+		t.Fatalf("expected 4 queued outbox actions (rate + classic:set + root:set + quiz), got %d", store.OutboxCount())
+	}
+
+	// Simulate exiting & relaunching Hermes OS while STILL offline: progress must persist!
+	reloaded := NewOfflineStore(dir, filepath.Join(dir, "fallback.png"))
+	_, pReloadedDrill, ok := reloaded.GetScreen("deutsch_drill")
+	if !ok || filepath.Base(pReloadedDrill) != "deck_done.png" {
+		t.Fatalf("expected rated card to remain skipped after offline restart, got %s", pReloadedDrill)
+	}
+	_, pReloadedRoot, ok := reloaded.GetScreen("deutsch_root")
+	if !ok || filepath.Base(pReloadedRoot) != "r1.png" {
+		t.Fatalf("expected root pack index to persist after offline restart, got %s", pReloadedRoot)
+	}
+}

@@ -19,6 +19,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -145,10 +146,11 @@ func main() {
 	endpoints := resolveEndpoints(cfg)
 
 	transport := &http.Transport{
+		DialContext:     (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: cfg.InsecureTLS},
 	}
-	syncClient := &http.Client{Timeout: 25 * time.Second, Transport: transport}
-	bgClient := &http.Client{Timeout: 10 * time.Second, Transport: transport}
+	syncClient := &http.Client{Timeout: 90 * time.Second, Transport: transport}
+	bgClient := &http.Client{Timeout: 45 * time.Second, Transport: transport}
 
 	const tmpScreenPNG = "/tmp/hermes_screen.png"
 	const fallbackLockPNG = "/mnt/us/hermes_screensavers/hermes_01.png"
@@ -525,14 +527,85 @@ func main() {
 
 			case strings.HasPrefix(act, "nav:"):
 				target := strings.TrimPrefix(act, "nav:")
+				if target == "deutsch_drill" && scr != "deutsch_drill" {
+					store.DeutschResetFlip()
+				}
 				renderCurrent(target, target != scr, false)
 
 			case act == "sync:all":
 				go runSync(true)
 
-			case act == "briefing:refresh":
-				store.QueueAction("briefing:refresh", scr)
+			case act == "briefing:refresh" || act == "deutsch:reader:refresh":
+				store.QueueAction(act, scr)
 				go runSync(true)
+
+			case act == "deutsch:reveal":
+				store.DeutschReveal()
+				renderCurrent("deutsch_drill", false, false)
+
+			case strings.HasPrefix(act, "deutsch:guess:"):
+				choice := strings.TrimPrefix(act, "deutsch:guess:")
+				ok, ans := store.DeutschGuess(choice)
+				mu.Lock()
+				currentScreen = "deutsch_drill"
+				mu.Unlock()
+				if ok {
+					setBannerAndRepaint(fmt.Sprintf("RICHTIG! %s", strings.ToUpper(ans)), 1800*time.Millisecond, false)
+				} else {
+					setBannerAndRepaint(fmt.Sprintf("NEIN · RICHTIG: %s", strings.ToUpper(ans)), 2400*time.Millisecond, false)
+				}
+
+			case strings.HasPrefix(act, "deutsch:rate:"):
+				parts := strings.Split(act, ":")
+				if len(parts) >= 4 {
+					cid, err1 := strconv.Atoi(parts[2])
+					rat, err2 := strconv.Atoi(parts[3])
+					if err1 == nil && err2 == nil {
+						store.DeutschRateCard(cid, rat)
+						renderCurrent("deutsch_drill", false, false)
+					}
+				}
+
+			case act == "deutsch:classic:next":
+				if store.DeutschStepClassic(1) {
+					setBannerAndRepaint("END OF PACK · SYNC FOR MORE TEXTS", 2400*time.Millisecond, false)
+				} else {
+					renderCurrent(scr, false, false)
+				}
+
+			case act == "deutsch:classic:prev":
+				store.DeutschStepClassic(-1)
+				renderCurrent(scr, false, false)
+
+			case strings.HasPrefix(act, "deutsch:classic:read:"):
+				store.QueueAction(act, scr)
+				setBannerAndRepaint("MARKED READ · +15 PTS QUEUED", 2000*time.Millisecond, false)
+
+			case strings.HasPrefix(act, "deutsch:classic:mine:"):
+				store.QueueAction(act, scr)
+				setBannerAndRepaint("CHUNKS QUEUED FOR FSRS", 2000*time.Millisecond, false)
+
+			case act == "deutsch:root:next":
+				store.DeutschStepRoot(1)
+				renderCurrent("deutsch_root", false, false)
+
+			case act == "deutsch:root:prev":
+				store.DeutschStepRoot(-1)
+				renderCurrent("deutsch_root", false, false)
+
+			case act == "deutsch:read_done":
+				store.QueueAction(act, scr)
+				setBannerAndRepaint("GELESEN · +15 PTS QUEUED", 2000*time.Millisecond, false)
+
+			case strings.HasPrefix(act, "deutsch:quiz:"):
+				idxStr := strings.TrimPrefix(act, "deutsch:quiz:")
+				if idx, err := strconv.Atoi(idxStr); err == nil {
+					if store.DeutschCheckQuiz(idx) {
+						setBannerAndRepaint("RICHTIG! +20 PTS QUEUED", 2400*time.Millisecond, false)
+					} else {
+						setBannerAndRepaint("CHECK PARALLEL DE/EN · +8 PTS", 2400*time.Millisecond, false)
+					}
+				}
 
 			case strings.HasPrefix(act, "task:toggle:"):
 				idStr := strings.TrimPrefix(act, "task:toggle:")

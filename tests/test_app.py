@@ -15,6 +15,7 @@ import backend.database as db_module
 import backend.modules.registry as reg_module
 import backend.services.calendar_svc as cal_module
 import backend.services.gemini_svc as gemini_module
+import backend.services.german_svc as german_module
 import backend.services.google_cal_svc as gcal_module
 import backend.services.pomodoro_svc as pomo_module
 import backend.main as main_module
@@ -28,6 +29,7 @@ def client(tmp_path: Path):
     reg_module.db = test_db
     cal_module.db = test_db
     gemini_module.db = test_db
+    german_module.db = test_db
     gcal_module.db = test_db
     pomo_module.db = test_db
     main_module.db = test_db
@@ -293,6 +295,10 @@ def test_offline_bundle_and_batch_sync(client: TestClient):
             "pomodoro",
             "weather",
             "briefing",
+            "deutsch",
+            "deutsch_read",
+            "deutsch_read_parallel",
+            "deutsch_root",
         }
         assert set(manifest["screens"].keys()) == expected_screens
         for scr in expected_screens:
@@ -301,6 +307,21 @@ def test_offline_bundle_and_batch_sync(client: TestClient):
             img = Image.open(io.BytesIO(zf.read(path)))
             assert img.size == (KINDLE_WIDTH, KINDLE_HEIGHT)
             assert img.mode == "L"
+
+        # Hermes Deutsch offline bundle ships pre-rendered FSRS deck, Famous Texts (3 modes) & all Root packs
+        de = manifest["deutsch"]
+        assert len(de["deck"]) >= 8
+        assert de["deck_done_file"] in names
+        assert de["deck"][0]["front_file"] in names
+        assert de["deck"][0]["back_file"] in names
+        assert de["classic_total"] >= 15
+        assert len(de["classics"]) >= 3
+        assert de["classics"][0]["idx"] == 0
+        assert de["classics"][0]["gloss_file"] in names
+        assert de["classics"][0]["parallel_file"] in names
+        assert de["classics"][0]["xray_file"] in names
+        assert len(de["roots"]) == 6
+        assert de["roots"][0]["file"] in names
 
         # Planner hitboxes include exact checkbox_rect for pixel-exact offline toggling
         planner_boxes = manifest["screens"]["planner"]["hitboxes"]
@@ -340,3 +361,122 @@ def test_security_headers_and_login_rate_limiting(client: TestClient, monkeypatc
     assert blocked.status_code == 429
     assert "retry-after" in blocked.headers
     auth_module.reset_login_rate_limits()
+
+
+def test_hermes_deutsch_end_to_end(client: TestClient):
+    # Home screen includes Deutsch app tile while keeping strictly 6 bottom dock items
+    home_html = client.get("/kindle?screen=home&mock=1").text
+    assert 'data-action="nav:deutsch"' in home_html
+    assert home_html.count('class="dock-item') == 6
+
+    # All Deutsch screens render cleanly
+    for scr in (
+        "deutsch",
+        "deutsch_drill",
+        "deutsch_classic",
+        "deutsch_classic_parallel",
+        "deutsch_classic_xray",
+        "deutsch_read",
+        "deutsch_read_parallel",
+        "deutsch_root",
+    ):
+        r = client.get(f"/kindle?screen={scr}&mock=1")
+        assert r.status_code == 200, f"Failed Deutsch screen {scr}"
+
+    # Verify standalone lockscreen_deutsch PNG is exact 1072x1448 8-bit grayscale
+    ls_de = client.get("/lockscreen.png?slide=deutsch&mock=1")
+    assert ls_de.status_code == 200
+    ls_img = Image.open(io.BytesIO(ls_de.content))
+    assert ls_img.size == (KINDLE_WIDTH, KINDLE_HEIGHT)
+    assert ls_img.mode == "L"
+
+    # Initial Sprachindex & seeded classics/deck
+    st0 = client.get("/api/german/state").json()
+    score0 = st0["mastery"]["total"]
+    assert st0["mastery"]["band"] == "A2"
+    assert len(st0["classics"]) >= 15
+    assert len(st0["deck"]) >= 10
+
+    # FSRS review via interactive action + reveal
+    first_card_id = st0["deck"][0]["id"]
+    rev_act = client.post("/api/action", json={"action": "deutsch:reveal", "current_screen": "deutsch_drill"})
+    assert rev_act.status_code == 200
+    rate_act = client.post(
+        "/api/action",
+        json={"action": f"deutsch:rate:{first_card_id}:3", "current_screen": "deutsch_drill"},
+    )
+    assert rate_act.status_code == 200
+
+    # Mark famous text read & mine its chunks
+    first_classic = st0["classics"][0]
+    read_res = client.post(f"/api/german/classics/{first_classic['id']}/read")
+    assert read_res.status_code == 200
+    mine_res = client.post(f"/api/german/classics/{first_classic['id']}/mine")
+    assert mine_res.status_code == 200
+    assert mine_res.json()["added"] >= 1
+
+    # Daily reader comprehension quiz + Companion Schreib-Sprint + Audio shadowing
+    quiz_act = client.post("/api/action", json={"action": "deutsch:quiz:0", "current_screen": "deutsch_read"})
+    assert quiz_act.status_code == 200
+
+    write_res = client.post(
+        "/api/german/writing",
+        json={"user_text": "Ich habe heute Bock auf Deutsch und will mehr Demokratie wagen.", "target_chunks": ["Bock", "wagen"]},
+    )
+    assert write_res.status_code == 200
+    assert "recast_de" in write_res.json()["entry"]
+
+    shadow_res = client.post("/api/german/shadow")
+    assert shadow_res.status_code == 200
+
+    # Custom card creation & custom speech/text import
+    card_res = client.post(
+        "/api/german/cards",
+        json={
+            "kind": "slang",
+            "cefr": "B1",
+            "category": "Umgangssprache",
+            "prompt_de": "Alles klar, ________ schon!",
+            "answer_de": "passt",
+            "full_de": "Alles klar, passt schon!",
+            "hint_en": "works for me",
+            "translation_en": "All good, that works!",
+            "rule_note": "Everyday spoken German approval.",
+        },
+    )
+    assert card_res.status_code == 200
+
+    imp_res = client.post(
+        "/api/german/classics/import",
+        json={
+            "title": "Test Rede",
+            "author": "Test Autor",
+            "german_text": "Das ist ein eigener deutscher Text zum schnellen Lernen.",
+            "english_translation": "This is a custom German text for rapid learning.",
+        },
+    )
+    assert imp_res.status_code == 200
+
+    # Replaying offline Deutsch bookmark & card rating pulls fresh content on next sync
+    batch_de = client.post(
+        "/api/sync/batch",
+        json={
+            "actions": [
+                {"action": f"deutsch:rate:{first_card_id}:3", "current_screen": "deutsch_drill"},
+                {"action": "deutsch:classic:set:4", "current_screen": "deutsch_classic"},
+                {"action": "deutsch:root:set:2", "current_screen": "deutsch_root"},
+            ],
+            "refresh_feeds": False,
+        },
+    )
+    assert batch_de.status_code == 200
+    assert batch_de.json()["applied"] == 3
+
+    # Sprachindex must have climbed meaningfully across all strands!
+    st1 = client.get("/api/german/state").json()
+    assert st1["mastery"]["total"] > score0
+    assert st1["mastery"]["classics_read"] >= 1
+    assert st1["mastery"]["writing_sessions"] >= 1
+    assert st1["mastery"]["streak_days"] >= 1
+    assert st1["classic_idx"] == 4
+    assert st1["root_idx"] == 2

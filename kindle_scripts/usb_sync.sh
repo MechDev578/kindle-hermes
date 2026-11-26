@@ -66,7 +66,7 @@ if outbox_path.exists():
 
 synced = False
 last_err = None
-with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+with httpx.Client(timeout=90.0, follow_redirects=True) as client:
     for name, url, tok in endpoints:
         headers = {"X-Hermes-Token": tok} if tok else {}
         try:
@@ -86,11 +86,12 @@ with httpx.Client(timeout=30.0, follow_redirects=True) as client:
             r_zip.raise_for_status()
             zf = zipfile.ZipFile(io.BytesIO(r_zip.content))
 
-            # Clean stale lockscreen slots
-            ls_dir = cache_dir / "lockscreens"
-            ls_dir.mkdir(parents=True, exist_ok=True)
-            for old in ls_dir.glob("*.png"):
-                old.unlink(missing_ok=True)
+            # Clean stale lockscreen slots & deutsch cards
+            for sub in ("lockscreens", "deutsch"):
+                sub_dir = cache_dir / sub
+                sub_dir.mkdir(parents=True, exist_ok=True)
+                for old in sub_dir.glob("*.png"):
+                    old.unlink(missing_ok=True)
 
             for member in zf.namelist():
                 if member.startswith("/") or ".." in member:
