@@ -29,6 +29,7 @@
 
   <nav class="tabs">
     <button class="tab-btn active" data-tab="plan">Plan &amp; Tasks</button>
+    <button class="tab-btn" data-tab="deutsch">Deutsch (A2&rarr;C2)</button>
     <button class="tab-btn" data-tab="lockscreen">Lock Screen</button>
     <button class="tab-btn" data-tab="apps">Hermes Apps &amp; Settings</button>
   </nav>
@@ -88,6 +89,127 @@
       </div>
     </section>
 
+    <!-- TAB 1.5: HERMES DEUTSCH (A2 -> C2 STUDIO) -->
+    <section id="panel-deutsch" class="panel">
+      <div class="card">
+        <div class="card-title">
+          <span>Sprachindex Mastery (A2 &rarr; C2)</span>
+          <span id="de-cefr-badge" class="brand-badge">A2.0 · 180/1000</span>
+        </div>
+        <div id="de-milestone-line" style="font-size:14px;color:#444;margin-bottom:12px;"></div>
+        <div id="de-strands-grid" class="grid-2" style="gap:10px;margin-bottom:14px;"></div>
+        <div class="row-wrap" style="border-top:1px solid #d7d4cb;padding-top:12px;justify-content:space-between;">
+          <div class="row-wrap">
+            <label for="de-level-select" style="font-size:13px;font-weight:700;">Current Target Level:</label>
+            <select id="de-level-select" style="width:auto;">
+              <option value="A2">A2 (Elementary+)</option>
+              <option value="B1">B1 (Intermediate)</option>
+              <option value="B2">B2 (Upper Intermediate)</option>
+              <option value="C1">C1 (Advanced)</option>
+              <option value="C2">C2 (Mastery)</option>
+            </select>
+            <label for="de-daily-goal" style="font-size:13px;font-weight:700;">Daily Cards:</label>
+            <input id="de-daily-goal" type="text" value="15" style="width:64px;" />
+            <button id="de-save-cfg-btn" class="btn btn-primary btn-sm" type="button">Save</button>
+          </div>
+          <button id="de-refresh-reader-btn" class="btn btn-sm" type="button">Regenerate Daily Reader</button>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">
+            <span>Audio Shadowing (de-DE Speech)</span>
+            <span id="de-audio-status" class="prio-pill">READY</span>
+          </div>
+          <p style="font-size:13px;color:#5c5b57;margin-bottom:12px;line-height:1.45;">
+            Listen on your phone/Mac while reading the exact text on your Kindle (dual-coding + shadowing speeds up German fluency dramatically).
+          </p>
+          <div id="de-audio-preview" style="background:#f5f4ef;border:1px solid #d7d4cb;border-radius:8px;padding:12px;margin-bottom:12px;font-size:14px;line-height:1.45;"></div>
+          <div class="row-wrap">
+            <button id="de-play-classic-btn" class="btn btn-primary btn-sm" type="button">Play Famous Text (1.0&times;)</button>
+            <button id="de-play-classic-slow-btn" class="btn btn-sm" type="button">Slow (0.8&times;)</button>
+            <button id="de-play-reader-btn" class="btn btn-sm" type="button">Play Daily Reader</button>
+            <button id="de-stop-audio-btn" class="btn btn-sm" type="button">Stop</button>
+            <button id="de-log-shadow-btn" class="btn btn-sm" type="button">Log Shadowing (+8 pts)</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>2-Min Schreib-Sprint (Pushed Output)</span>
+            <span class="prio-pill">+18 OUTPUT PTS</span>
+          </div>
+          <div style="font-size:13px;color:#5c5b57;margin-bottom:8px;">
+            Write 1&ndash;3 German sentences using any of today&rsquo;s chunks to get a native <strong>Recast</strong> &amp; C2 upgrade:
+          </div>
+          <div id="de-sprint-chips" class="row-wrap" style="margin-bottom:10px;"></div>
+          <textarea id="de-writing-input" rows="3" placeholder="Schreib hier 1–2 Sätze auf Deutsch..."></textarea>
+          <div class="row-wrap" style="margin-top:10px;">
+            <button id="de-submit-writing-btn" class="btn btn-primary btn-sm" type="button">Get Native Recast</button>
+          </div>
+          <div id="de-writing-result" style="margin-top:12px;"></div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">
+            <span>Quick Add Slang / Chunk to Kindle FSRS</span>
+          </div>
+          <form id="de-add-card-form">
+            <div class="row" style="margin-bottom:8px;">
+              <select id="de-card-kind" style="flex:1;">
+                <option value="slang">Slang / Redewendung</option>
+                <option value="cloze">Cloze Sentence Chunk</option>
+                <option value="gender">Der / Die / Das Blitz</option>
+                <option value="nomen_verb">Nomen-Verb-Verbindung</option>
+              </select>
+              <select id="de-card-cefr" style="width:92px;">
+                <option value="A2">A2</option>
+                <option value="B1">B1</option>
+                <option value="B2">B2</option>
+                <option value="C1">C1</option>
+                <option value="C2">C2</option>
+              </select>
+            </div>
+            <input id="de-card-prompt" type="text" placeholder="Prompt with _____ (e.g. Hast du heute _____ auf Pizza?)" required style="margin-bottom:8px;" />
+            <div class="row" style="margin-bottom:8px;">
+              <input id="de-card-answer" type="text" placeholder="Missing answer (e.g. Bock)" required />
+              <input id="de-card-hint" type="text" placeholder="English clue" />
+            </div>
+            <input id="de-card-full" type="text" placeholder="Full German sentence" required style="margin-bottom:8px;" />
+            <input id="de-card-en" type="text" placeholder="English translation" style="margin-bottom:8px;" />
+            <input id="de-card-rule" type="text" placeholder="Grammar rule or how to use in conversation" style="margin-bottom:10px;" />
+            <button class="btn btn-primary btn-sm" type="submit">Add to Kindle FSRS Deck</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>Import Any Speech, Book Paragraph or Song</span>
+          </div>
+          <form id="de-import-classic-form">
+            <div class="row" style="margin-bottom:8px;">
+              <input id="de-imp-title" type="text" placeholder="Title (e.g. Faust — Prolog)" required />
+              <input id="de-imp-author" type="text" placeholder="Speaker / Author" />
+            </div>
+            <textarea id="de-imp-de" rows="3" placeholder="Paste authentic German paragraph(s) here..." required style="margin-bottom:8px;"></textarea>
+            <textarea id="de-imp-en" rows="2" placeholder="Optional English translation (auto-generated if Gemini key is live)" style="margin-bottom:10px;"></textarea>
+            <button class="btn btn-primary btn-sm" type="submit">Build Kindle Study Packet</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <span>Ber&uuml;hmte Texte &amp; Cultural References Library</span>
+          <span id="de-classics-count" class="prio-pill">15 TEXTS</span>
+        </div>
+        <div id="de-classics-list"></div>
+      </div>
+    </section>
+
     <!-- TAB 2: LOCK SCREEN DESIGNER -->
     <section id="panel-lockscreen" class="panel">
       <div class="grid-2">
@@ -116,6 +238,7 @@
             <select id="ls-preview-slide" style="width:auto;">
               <option value="auto">Auto (Active Mode)</option>
               <option value="smart">Smart Overview</option>
+              <option value="deutsch">Deutsch (A2&rarr;C2)</option>
               <option value="calendar">Calendar Slide</option>
               <option value="planning">Planning Slide</option>
               <option value="weather">Weather Slide</option>

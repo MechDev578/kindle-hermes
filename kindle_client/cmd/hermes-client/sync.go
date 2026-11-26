@@ -82,6 +82,51 @@ type PomoState struct {
 	StartedAtUnix     int64  `json:"started_at_unix,omitempty"`
 }
 
+type DeutschCard struct {
+	ID            int      `json:"id"`
+	Kind          string   `json:"kind"`
+	CEFR          string   `json:"cefr"`
+	AnswerDE      string   `json:"answer_de"`
+	FullDE        string   `json:"full_de"`
+	FrontFile     string   `json:"front_file"`
+	BackFile      string   `json:"back_file"`
+	FrontHitboxes []Hitbox `json:"front_hitboxes"`
+	BackHitboxes  []Hitbox `json:"back_hitboxes"`
+}
+
+type DeutschClassic struct {
+	ID               int      `json:"id"`
+	Idx              int      `json:"idx"`
+	Author           string   `json:"author"`
+	Title            string   `json:"title"`
+	GlossFile        string   `json:"gloss_file"`
+	GlossHitboxes    []Hitbox `json:"gloss_hitboxes"`
+	ParallelFile     string   `json:"parallel_file"`
+	ParallelHitboxes []Hitbox `json:"parallel_hitboxes"`
+	XrayFile         string   `json:"xray_file"`
+	XrayHitboxes     []Hitbox `json:"xray_hitboxes"`
+}
+
+type DeutschRoot struct {
+	Idx      int      `json:"idx"`
+	Root     string   `json:"root"`
+	File     string   `json:"file"`
+	Hitboxes []Hitbox `json:"hitboxes"`
+}
+
+type DeutschBundle struct {
+	CEFRLabel             string           `json:"cefr_label"`
+	Sprachindex           int              `json:"sprachindex"`
+	ClassicTotal          int              `json:"classic_total"`
+	Deck                  []DeutschCard    `json:"deck"`
+	DeckDoneFile          string           `json:"deck_done_file"`
+	DeckDoneHitboxes      []Hitbox         `json:"deck_done_hitboxes"`
+	Classics              []DeutschClassic `json:"classics"`
+	Roots                 []DeutschRoot    `json:"roots"`
+	ReaderQuizAnswerIdx   int              `json:"reader_quiz_answer_idx"`
+	ReaderQuizExplanation string           `json:"reader_quiz_explanation"`
+}
+
 type BundleManifest struct {
 	Version              int                     `json:"version"`
 	SyncedAtUnix         int64                   `json:"synced_at_unix"`
@@ -96,9 +141,11 @@ type BundleManifest struct {
 	Screens              map[string]CachedScreen `json:"screens"`
 	Tasks                []TaskItem              `json:"tasks"`
 	Pomodoro             PomoState               `json:"pomodoro"`
+	Deutsch              *DeutschBundle          `json:"deutsch,omitempty"`
 }
 
 type OutboxAction struct {
+	Seq           int64  `json:"-"`
 	Action        string `json:"action"`
 	CurrentScreen string `json:"current_screen"`
 	TS            int64  `json:"ts"`
@@ -111,15 +158,20 @@ type SyncEndpoint struct {
 }
 
 type OfflineStore struct {
-	mu          sync.Mutex
-	cacheDir    string
-	fallbackPNG string
-	manifest    *BundleManifest
-	outbox      []OutboxAction
-	taskState   map[int]bool
-	pomo        PomoState
-	cycleIdx    int
-	lastSource  string
+	mu           sync.Mutex
+	cacheDir     string
+	fallbackPNG  string
+	manifest     *BundleManifest
+	outbox       []OutboxAction
+	outboxSeq    int64
+	taskState    map[int]bool
+	pomo         PomoState
+	cycleIdx     int
+	lastSource   string
+	deDeckIdx    int
+	deFlipped    bool
+	deClassicIdx int
+	deRootIdx    int
 }
 
 func resolveEndpoints(cfg Config) []SyncEndpoint {
@@ -158,6 +210,7 @@ func NewOfflineStore(cacheDir, fallbackPNG string) *OfflineStore {
 	}
 	_ = os.MkdirAll(filepath.Join(cacheDir, "screens"), 0755)
 	_ = os.MkdirAll(filepath.Join(cacheDir, "lockscreens"), 0755)
+	_ = os.MkdirAll(filepath.Join(cacheDir, "deutsch"), 0755)
 	s := &OfflineStore{
 		cacheDir:    cacheDir,
 		fallbackPNG: fallbackPNG,
@@ -202,6 +255,10 @@ func (s *OfflineStore) loadFromDiskLocked() {
 	if raw, err := os.ReadFile(filepath.Join(s.cacheDir, "outbox.json")); err == nil {
 		var acts []OutboxAction
 		if err := json.Unmarshal(raw, &acts); err == nil {
+			for i := range acts {
+				s.outboxSeq++
+				acts[i].Seq = s.outboxSeq
+			}
 			s.outbox = acts
 			// Re-apply pending task:set overrides on top of cached manifest state
 			for _, a := range acts {
@@ -209,6 +266,7 @@ func (s *OfflineStore) loadFromDiskLocked() {
 					s.taskState[id] = done
 				}
 			}
+			s.applyPendingDeutschOutboxLocked()
 		}
 	}
 }
@@ -227,6 +285,70 @@ func parseTaskSetAction(act string) (int, bool, bool) {
 	}
 	done := parts[3] == "1" || parts[3] == "true"
 	return id, done, true
+}
+
+func parseDeutschRateAction(act string) (int, bool) {
+	if !strings.HasPrefix(act, "deutsch:rate:") {
+		return 0, false
+	}
+	parts := strings.Split(act, ":")
+	if len(parts) < 4 {
+		return 0, false
+	}
+	id, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return 0, false
+	}
+	return id, true
+}
+
+func parseDeutschSetAction(act, prefix string) (int, bool) {
+	if !strings.HasPrefix(act, prefix) {
+		return 0, false
+	}
+	idx, err := strconv.Atoi(strings.TrimPrefix(act, prefix))
+	if err != nil {
+		return 0, false
+	}
+	return idx, true
+}
+
+func (s *OfflineStore) applyPendingDeutschOutboxLocked() {
+	if s.manifest == nil || s.manifest.Deutsch == nil {
+		return
+	}
+	de := s.manifest.Deutsch
+	rated := make(map[int]bool)
+	lastClassicIdx := -1
+	lastRootIdx := -1
+	for _, a := range s.outbox {
+		if id, ok := parseDeutschRateAction(a.Action); ok {
+			rated[id] = true
+		} else if idx, ok := parseDeutschSetAction(a.Action, "deutsch:classic:set:"); ok {
+			lastClassicIdx = idx
+		} else if idx, ok := parseDeutschSetAction(a.Action, "deutsch:root:set:"); ok {
+			lastRootIdx = idx
+		}
+	}
+	for s.deDeckIdx < len(de.Deck) && rated[de.Deck[s.deDeckIdx].ID] {
+		s.deDeckIdx++
+	}
+	if lastClassicIdx >= 0 {
+		for i, cl := range de.Classics {
+			if cl.Idx == lastClassicIdx {
+				s.deClassicIdx = i
+				break
+			}
+		}
+	}
+	if lastRootIdx >= 0 {
+		for i, rt := range de.Roots {
+			if rt.Idx == lastRootIdx {
+				s.deRootIdx = i
+				break
+			}
+		}
+	}
 }
 
 func (s *OfflineStore) HasCache() bool {
@@ -264,6 +386,65 @@ func (s *OfflineStore) GetScreen(screenID string) (CachedScreen, string, bool) {
 	if s.manifest == nil {
 		return CachedScreen{}, "", false
 	}
+
+	resolveFile := func(rel string, boxes []Hitbox) (CachedScreen, string, bool) {
+		if rel == "" {
+			return CachedScreen{}, "", false
+		}
+		fullPath := filepath.Join(s.cacheDir, rel)
+		st, err := os.Stat(fullPath)
+		if err != nil || st.Size() < 256 {
+			return CachedScreen{}, "", false
+		}
+		return CachedScreen{File: rel, Hitboxes: boxes}, fullPath, true
+	}
+
+	if de := s.manifest.Deutsch; de != nil {
+		switch screenID {
+		case "deutsch_drill":
+			if s.deDeckIdx >= len(de.Deck) || len(de.Deck) == 0 {
+				if scr, p, ok := resolveFile(de.DeckDoneFile, de.DeckDoneHitboxes); ok {
+					return scr, p, true
+				}
+			} else {
+				card := de.Deck[s.deDeckIdx]
+				if s.deFlipped {
+					if scr, p, ok := resolveFile(card.BackFile, card.BackHitboxes); ok {
+						return scr, p, true
+					}
+				} else {
+					if scr, p, ok := resolveFile(card.FrontFile, card.FrontHitboxes); ok {
+						return scr, p, true
+					}
+				}
+			}
+		case "deutsch_classic", "deutsch_classic_parallel", "deutsch_classic_xray":
+			if len(de.Classics) > 0 {
+				cl := de.Classics[s.deClassicIdx%len(de.Classics)]
+				var rel string
+				var boxes []Hitbox
+				switch screenID {
+				case "deutsch_classic_parallel":
+					rel, boxes = cl.ParallelFile, cl.ParallelHitboxes
+				case "deutsch_classic_xray":
+					rel, boxes = cl.XrayFile, cl.XrayHitboxes
+				default:
+					rel, boxes = cl.GlossFile, cl.GlossHitboxes
+				}
+				if scr, p, ok := resolveFile(rel, boxes); ok {
+					return scr, p, true
+				}
+			}
+		case "deutsch_root":
+			if len(de.Roots) > 0 {
+				rt := de.Roots[s.deRootIdx%len(de.Roots)]
+				if scr, p, ok := resolveFile(rt.File, rt.Hitboxes); ok {
+					return scr, p, true
+				}
+			}
+		}
+	}
+
 	scr, ok := s.manifest.Screens[screenID]
 	if !ok {
 		scr, ok = s.manifest.Screens["home"]
@@ -304,7 +485,7 @@ func (s *OfflineStore) QueueAction(action, currentScreen string) {
 
 func (s *OfflineStore) queueActionLocked(action, currentScreen string) {
 	now := time.Now().Unix()
-	// Deduplicate idempotent task:set:<id> entries so repeated offline toggles emit one clean final state
+	// Deduplicate idempotent overrides so repeated offline taps emit one clean final state
 	if id, _, ok := parseTaskSetAction(action); ok {
 		filtered := s.outbox[:0]
 		for _, item := range s.outbox {
@@ -314,13 +495,132 @@ func (s *OfflineStore) queueActionLocked(action, currentScreen string) {
 			filtered = append(filtered, item)
 		}
 		s.outbox = filtered
+	} else if cid, ok := parseDeutschRateAction(action); ok {
+		filtered := s.outbox[:0]
+		for _, item := range s.outbox {
+			if prevID, prevOK := parseDeutschRateAction(item.Action); prevOK && prevID == cid {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		s.outbox = filtered
+	} else if strings.HasPrefix(action, "deutsch:classic:set:") {
+		filtered := s.outbox[:0]
+		for _, item := range s.outbox {
+			if strings.HasPrefix(item.Action, "deutsch:classic:set:") {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		s.outbox = filtered
+	} else if strings.HasPrefix(action, "deutsch:root:set:") {
+		filtered := s.outbox[:0]
+		for _, item := range s.outbox {
+			if strings.HasPrefix(item.Action, "deutsch:root:set:") {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		s.outbox = filtered
+	} else if strings.HasPrefix(action, "deutsch:quiz:") {
+		filtered := s.outbox[:0]
+		for _, item := range s.outbox {
+			if strings.HasPrefix(item.Action, "deutsch:quiz:") {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		s.outbox = filtered
 	}
+	s.outboxSeq++
 	s.outbox = append(s.outbox, OutboxAction{
+		Seq:           s.outboxSeq,
 		Action:        action,
 		CurrentScreen: currentScreen,
 		TS:            now,
 	})
 	s.saveOutboxLocked()
+}
+
+// ---------- Local Offline Hermes Deutsch Engine ----------
+
+func (s *OfflineStore) DeutschResetFlip() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deFlipped = false
+}
+
+func (s *OfflineStore) DeutschReveal() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deFlipped = true
+}
+
+func (s *OfflineStore) DeutschGuess(choice string) (bool, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deFlipped = true
+	if s.manifest == nil || s.manifest.Deutsch == nil || s.deDeckIdx >= len(s.manifest.Deutsch.Deck) {
+		return false, ""
+	}
+	ans := strings.TrimSpace(s.manifest.Deutsch.Deck[s.deDeckIdx].AnswerDE)
+	return strings.EqualFold(strings.TrimSpace(choice), ans), ans
+}
+
+func (s *OfflineStore) DeutschRateCard(cardID, rating int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.queueActionLocked(fmt.Sprintf("deutsch:rate:%d:%d", cardID, rating), "deutsch_drill")
+	if s.manifest != nil && s.manifest.Deutsch != nil && s.deDeckIdx < len(s.manifest.Deutsch.Deck) {
+		s.deDeckIdx++
+	}
+	s.deFlipped = false
+}
+
+func (s *OfflineStore) DeutschStepClassic(delta int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.manifest == nil || s.manifest.Deutsch == nil || len(s.manifest.Deutsch.Classics) == 0 {
+		return false
+	}
+	de := s.manifest.Deutsch
+	n := len(de.Classics)
+	total := de.ClassicTotal
+	if total < n {
+		total = n
+	}
+	// If stepping forward past the last offline-bundled classic when more exist on server,
+	// queue the NEXT server batch index so the upcoming online SYNC pulls brand-new texts!
+	if delta > 0 && s.deClassicIdx == n-1 && total > n {
+		nextGlobal := (de.Classics[n-1].Idx + 1) % total
+		s.queueActionLocked(fmt.Sprintf("deutsch:classic:set:%d", nextGlobal), "deutsch_classic")
+		s.deClassicIdx = 0
+		return true
+	}
+	s.deClassicIdx = (s.deClassicIdx + delta%n + n) % n
+	s.queueActionLocked(fmt.Sprintf("deutsch:classic:set:%d", de.Classics[s.deClassicIdx].Idx), "deutsch_classic")
+	return false
+}
+
+func (s *OfflineStore) DeutschStepRoot(delta int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.manifest == nil || s.manifest.Deutsch == nil || len(s.manifest.Deutsch.Roots) == 0 {
+		return
+	}
+	n := len(s.manifest.Deutsch.Roots)
+	s.deRootIdx = (s.deRootIdx + delta%n + n) % n
+	s.queueActionLocked(fmt.Sprintf("deutsch:root:set:%d", s.manifest.Deutsch.Roots[s.deRootIdx].Idx), "deutsch_root")
+}
+
+func (s *OfflineStore) DeutschCheckQuiz(choiceIdx int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.queueActionLocked(fmt.Sprintf("deutsch:quiz:%d", choiceIdx), "deutsch_read")
+	if s.manifest == nil || s.manifest.Deutsch == nil {
+		return false
+	}
+	return choiceIdx == s.manifest.Deutsch.ReaderQuizAnswerIdx
 }
 
 func (s *OfflineStore) ToggleTaskOffline(taskID int, currentScreen string) bool {
@@ -556,10 +856,15 @@ func (s *OfflineStore) ExtractBundleZip(zipBytes []byte) (*BundleManifest, error
 		return nil, fmt.Errorf("manifest contains zero screens")
 	}
 
-	// Clean stale slot PNGs before writing fresh ones
-	if oldSlots, err := filepath.Glob(filepath.Join(s.cacheDir, "lockscreens", "*.png")); err == nil {
-		for _, old := range oldSlots {
-			_ = os.Remove(old)
+	// Clean stale slot & deutsch PNGs before writing fresh ones
+	for _, pat := range []string{
+		filepath.Join(s.cacheDir, "lockscreens", "*.png"),
+		filepath.Join(s.cacheDir, "deutsch", "*.png"),
+	} {
+		if oldFiles, err := filepath.Glob(pat); err == nil {
+			for _, old := range oldFiles {
+				_ = os.Remove(old)
+			}
 		}
 	}
 
@@ -583,6 +888,10 @@ func (s *OfflineStore) ExtractBundleZip(zipBytes []byte) (*BundleManifest, error
 
 	s.mu.Lock()
 	s.manifest = &manifest
+	s.deDeckIdx = 0
+	s.deFlipped = false
+	s.deClassicIdx = 0
+	s.deRootIdx = 0
 	s.taskState = make(map[int]bool, len(manifest.Tasks))
 	for _, t := range manifest.Tasks {
 		s.taskState[t.ID] = t.Completed
@@ -597,6 +906,7 @@ func (s *OfflineStore) ExtractBundleZip(zipBytes []byte) (*BundleManifest, error
 			s.taskState[id] = done
 		}
 	}
+	s.applyPendingDeutschOutboxLocked()
 	s.mu.Unlock()
 	return &manifest, nil
 }
@@ -651,13 +961,21 @@ func (s *OfflineStore) syncWithEndpoint(client *http.Client, ep SyncEndpoint, fo
 			return fmt.Errorf("batch sync HTTP %d", resp.StatusCode)
 		}
 
-		// Remove only the flushed prefix in case user tapped again mid-sync
-		s.mu.Lock()
-		if len(s.outbox) >= len(pending) {
-			s.outbox = s.outbox[len(pending):]
-		} else {
-			s.outbox = nil
+		// Remove only the exact flushed sequence numbers so concurrent offline taps during sync are never dropped
+		var maxFlushedSeq int64
+		for _, p := range pending {
+			if p.Seq > maxFlushedSeq {
+				maxFlushedSeq = p.Seq
+			}
 		}
+		s.mu.Lock()
+		kept := s.outbox[:0]
+		for _, item := range s.outbox {
+			if item.Seq > maxFlushedSeq {
+				kept = append(kept, item)
+			}
+		}
+		s.outbox = kept
 		s.saveOutboxLocked()
 		s.mu.Unlock()
 	}
