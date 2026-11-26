@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import io
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,7 @@ class RenderedScreen:
     etag: str
     width: int = KINDLE_WIDTH
     height: int = KINDLE_HEIGHT
+    layout: dict[str, Any] = field(default_factory=dict)
 
 
 def _find_chromium_executable() -> str | None:
@@ -114,6 +115,69 @@ class EinkRenderer:
             self._browser = await self._playwright.chromium.launch(**launch_kwargs)
         return self._browser
 
+    async def _extract_page_meta(self, page) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        result = await page.evaluate(
+            """() => {
+                const toRect = (el) => {
+                    if (!el) return null;
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 1 || r.height < 1) return null;
+                    return {
+                        x: Math.max(0, Math.round(r.left)),
+                        y: Math.max(0, Math.round(r.top)),
+                        w: Math.round(r.width),
+                        h: Math.round(r.height),
+                    };
+                };
+                const nodes = document.querySelectorAll('[data-action]');
+                const boxes = [];
+                for (const el of nodes) {
+                    const rect = toRect(el);
+                    if (!rect) continue;
+                    const action = el.getAttribute('data-action');
+                    const box = {
+                        action,
+                        label: el.getAttribute('data-label') || (el.innerText || '').trim().slice(0, 48),
+                        x: rect.x,
+                        y: rect.y,
+                        w: rect.w,
+                        h: rect.h,
+                    };
+                    if (action && action.startsWith('task:toggle:')) {
+                        const cb = el.querySelector('.checkbox-box');
+                        const txt = el.querySelector('.task-text');
+                        if (cb) box.checkbox_rect = toRect(cb);
+                        if (txt) box.text_rect = toRect(txt);
+                    }
+                    boxes.push(box);
+                }
+
+                const layout = {};
+                const topbar = toRect(document.querySelector('.topbar'));
+                if (topbar) layout.topbar = topbar;
+
+                const stage = document.querySelector('.pomo-stage');
+                if (stage) {
+                    const segs = Array.from(stage.querySelectorAll('.seg-cell')).map(toRect).filter(Boolean);
+                    const pill = stage.querySelector('.pill');
+                    const toggleBtn = document.querySelector('[data-action="pomo:toggle"]');
+                    layout.pomo = {
+                        stage: toRect(stage),
+                        badge: toRect(pill),
+                        digits: toRect(stage.querySelector('.pomo-big-time')),
+                        status: toRect(stage.querySelector('.pomo-status-line')),
+                        seg_cells: segs,
+                        toggle_btn: toRect(toggleBtn),
+                        mode_focus: toRect(document.querySelector('[data-action="pomo:mode:focus"]')),
+                        mode_short: toRect(document.querySelector('[data-action="pomo:mode:short_break"]')),
+                        mode_long: toRect(document.querySelector('[data-action="pomo:mode:long_break"]')),
+                    };
+                }
+                return { boxes, layout };
+            }"""
+        )
+        return result["boxes"], result["layout"]
+
     async def render_html(self, html: str, base_url: str = "http://127.0.0.1:8000") -> RenderedScreen:
         """Render complete HTML at exact 1072x1448 and extract all [data-action] hitboxes."""
         async with self._lock:
@@ -125,27 +189,8 @@ class EinkRenderer:
                 )
                 page = await context.new_page()
                 try:
-                    # Inline static CSS relative to base_url or file content already inlined
                     await page.set_content(html, wait_until="load")
-                    hitboxes = await page.evaluate(
-                        """() => {
-                            const nodes = document.querySelectorAll('[data-action]');
-                            const boxes = [];
-                            for (const el of nodes) {
-                                const rect = el.getBoundingClientRect();
-                                if (rect.width < 1 || rect.height < 1) continue;
-                                boxes.push({
-                                    action: el.getAttribute('data-action'),
-                                    label: el.getAttribute('data-label') || (el.innerText || '').trim().slice(0, 48),
-                                    x: Math.max(0, Math.round(rect.left)),
-                                    y: Math.max(0, Math.round(rect.top)),
-                                    w: Math.round(rect.width),
-                                    h: Math.round(rect.height),
-                                });
-                            }
-                            return boxes;
-                        }"""
-                    )
+                    hitboxes, layout = await self._extract_page_meta(page)
                     raw_png = await page.screenshot(
                         type="png",
                         clip={"x": 0, "y": 0, "width": KINDLE_WIDTH, "height": KINDLE_HEIGHT},
@@ -156,13 +201,52 @@ class EinkRenderer:
                 png_bytes = _quantize_eink_grayscale(raw_png)
                 etag = hashlib.sha256(png_bytes).hexdigest()[:16]
                 self._store_cached_png(etag, png_bytes)
-                return RenderedScreen(png_bytes=png_bytes, hitboxes=hitboxes, etag=etag)
+                return RenderedScreen(png_bytes=png_bytes, hitboxes=hitboxes, etag=etag, layout=layout)
             except Exception as exc:
                 logger.exception("Playwright render failed: %s", exc)
                 png_bytes = _fallback_pillow_png("Chromium renderer unavailable", str(exc)[:180])
                 etag = hashlib.sha256(png_bytes).hexdigest()[:16]
                 self._store_cached_png(etag, png_bytes)
-                return RenderedScreen(png_bytes=png_bytes, hitboxes=[], etag=etag)
+                return RenderedScreen(png_bytes=png_bytes, hitboxes=[], etag=etag, layout={})
+
+    async def render_batch(self, html_items: list[tuple[str, str]]) -> dict[str, RenderedScreen]:
+        """Render multiple HTML screens reusing one warm browser context for fast offline bundles."""
+        results: dict[str, RenderedScreen] = {}
+        async with self._lock:
+            try:
+                browser = await self._ensure_browser()
+                context = await browser.new_context(
+                    viewport={"width": KINDLE_WIDTH, "height": KINDLE_HEIGHT},
+                    device_scale_factor=1,
+                )
+                page = await context.new_page()
+                try:
+                    for key, html in html_items:
+                        await page.set_content(html, wait_until="load")
+                        hitboxes, layout = await self._extract_page_meta(page)
+                        raw_png = await page.screenshot(
+                            type="png",
+                            clip={"x": 0, "y": 0, "width": KINDLE_WIDTH, "height": KINDLE_HEIGHT},
+                        )
+                        png_bytes = _quantize_eink_grayscale(raw_png)
+                        etag = hashlib.sha256(png_bytes).hexdigest()[:16]
+                        self._store_cached_png(etag, png_bytes)
+                        results[key] = RenderedScreen(
+                            png_bytes=png_bytes,
+                            hitboxes=hitboxes,
+                            etag=etag,
+                            layout=layout,
+                        )
+                finally:
+                    await context.close()
+            except Exception as exc:
+                logger.exception("Playwright batch render failed: %s", exc)
+                for key, _ in html_items:
+                    if key not in results:
+                        png_bytes = _fallback_pillow_png("Chromium renderer unavailable", str(exc)[:180])
+                        etag = hashlib.sha256(png_bytes).hexdigest()[:16]
+                        results[key] = RenderedScreen(png_bytes=png_bytes, hitboxes=[], etag=etag, layout={})
+        return results
 
     async def close(self) -> None:
         async with self._lock:

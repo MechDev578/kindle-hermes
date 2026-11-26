@@ -178,6 +178,17 @@ VALID_SCREENS = {
     "lockscreen_weather",
 }
 
+OFFLINE_SCREENS = [
+    "home",
+    "today",
+    "calendar",
+    "calendar_tomorrow",
+    "planner",
+    "pomodoro",
+    "weather",
+    "briefing",
+]
+
 
 def list_enabled_modules(enabled_ids: list[str] | None = None) -> list[HermesModule]:
     if not enabled_ids:
@@ -282,6 +293,16 @@ async def dispatch_action(
             db.toggle_task(task_id)
             message = f"Toggled task {task_id}"
         except ValueError:
+            pass
+
+    elif act.startswith("task:set:"):
+        try:
+            parts = act.split(":")
+            task_id = int(parts[2])
+            completed = parts[3].strip() in ("1", "true", "yes")
+            db.update_task(task_id, completed=completed)
+            message = f"Set task {task_id} completed={completed}"
+        except (ValueError, IndexError):
             pass
 
     elif act == "task:clear_done":

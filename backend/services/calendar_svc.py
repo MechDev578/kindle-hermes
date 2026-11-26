@@ -300,3 +300,111 @@ async def get_calendar_context(
         "today_count": len(all_today_serialized),
         "remaining_count": len(upcoming_today_serialized) + (1 if current_serialized else 0),
     }
+
+
+def reclassify_calendar_context(cal_data: dict[str, Any], target_now: datetime) -> dict[str, Any]:
+    """Re-classify an already-fetched calendar context for another timestamp today (zero network calls)."""
+    all_today_serialized: list[dict[str, Any]] = []
+    upcoming_today_serialized: list[dict[str, Any]] = []
+    current_found = False
+    next_found = False
+
+    for item in cal_data.get("all_today") or []:
+        try:
+            start = datetime.fromisoformat(item["start_iso"])
+            end = datetime.fromisoformat(item["end_iso"])
+        except Exception:
+            continue
+        raw = {
+            "title": item.get("title", ""),
+            "location": item.get("location", ""),
+            "category": item.get("category", "Event"),
+            "all_day": bool(item.get("all_day", False)),
+            "start": start,
+            "end": end,
+        }
+        if raw["all_day"]:
+            status = "upcoming"
+        elif start <= target_now < end:
+            status = "now"
+            current_found = True
+        elif start > target_now:
+            if not next_found:
+                next_found = True
+                status = "next"
+            else:
+                status = "upcoming"
+        else:
+            status = "past"
+
+        serialized = _serialize_event(raw, target_now, status)
+        all_today_serialized.append(serialized)
+        if status in ("next", "upcoming"):
+            upcoming_today_serialized.append(serialized)
+
+    current_serialized = next((e for e in all_today_serialized if e["status"] == "now"), None) if current_found else None
+    next_serialized = next((e for e in all_today_serialized if e["status"] == "next"), None)
+
+    if current_serialized:
+        schedule_state = "in_event"
+    elif next_serialized:
+        schedule_state = "between_events"
+    else:
+        schedule_state = "day_complete"
+
+    return {
+        "source": cal_data.get("source", "mock"),
+        "error_note": cal_data.get("error_note", ""),
+        "state": schedule_state,
+        "current_event": current_serialized,
+        "next_event": next_serialized,
+        "upcoming_today": upcoming_today_serialized,
+        "all_today": all_today_serialized,
+        "tomorrow_events": cal_data.get("tomorrow_events") or [],
+        "today_count": len(all_today_serialized),
+        "remaining_count": len(upcoming_today_serialized) + (1 if current_serialized else 0),
+    }
+
+
+def compute_lockscreen_time_slots(
+    cal_data: dict[str, Any],
+    now: datetime,
+    max_slots: int = 10,
+) -> list[dict[str, Any]]:
+    """Compute time-sliced intervals covering today's upcoming event transitions for offline lock screens."""
+    transitions: list[datetime] = [now]
+    for ev in cal_data.get("all_today") or []:
+        if ev.get("all_day"):
+            continue
+        try:
+            start = datetime.fromisoformat(ev["start_iso"])
+            end = datetime.fromisoformat(ev["end_iso"])
+        except Exception:
+            continue
+        if start > now + timedelta(seconds=60):
+            transitions.append(start)
+        if end > now + timedelta(seconds=60):
+            transitions.append(end)
+
+    transitions.sort()
+    deduped: list[datetime] = []
+    for ts in transitions:
+        if not deduped or (ts - deduped[-1]).total_seconds() >= 120:
+            deduped.append(ts)
+
+    deduped = deduped[:max_slots]
+    end_of_day = datetime.combine(now.date() + timedelta(days=1), dtime(5, 0), tzinfo=now.tzinfo)
+
+    slots: list[dict[str, Any]] = []
+    for idx, start_dt in enumerate(deduped):
+        end_dt = deduped[idx + 1] if idx + 1 < len(deduped) else max(end_of_day, start_dt + timedelta(hours=6))
+        slots.append(
+            {
+                "id": f"slot_{idx}",
+                "dt": start_dt,
+                "start_unix": int(start_dt.timestamp()),
+                "end_unix": int(end_dt.timestamp()),
+                "label": f"{start_dt.strftime('%H:%M')}-{end_dt.strftime('%H:%M')}",
+            }
+        )
+    return slots

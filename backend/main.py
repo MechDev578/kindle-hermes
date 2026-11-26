@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone as dt_timezone
+import io
+import json
 from pathlib import Path
+import time
 from typing import Any
+import zipfile
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
@@ -18,6 +22,7 @@ from backend.auth import is_auth_enabled, require_auth, verify_token
 from backend.config import DEVICE_NAME, KINDLE_HEIGHT, KINDLE_PPI, KINDLE_WIDTH, STATIC_DIR, TEMPLATES_DIR
 from backend.database import db
 from backend.modules.registry import (
+    OFFLINE_SCREENS,
     VALID_SCREENS,
     build_data_bundle,
     dispatch_action,
@@ -121,6 +126,17 @@ class ActionPayload(BaseModel):
     mock: bool | None = None
 
 
+class SyncBatchAction(BaseModel):
+    action: str
+    current_screen: str = "home"
+    ts: int | None = None
+
+
+class SyncBatchPayload(BaseModel):
+    actions: list[SyncBatchAction] = Field(default_factory=list)
+    refresh_feeds: bool = True
+
+
 class PomodoroModePayload(BaseModel):
     mode: str = "focus"
 
@@ -144,6 +160,38 @@ def _effective_settings(mock_override: bool | None = None) -> dict[str, Any]:
     return settings
 
 
+def _render_html_from_bundle(
+    screen_id: str,
+    bundle: dict[str, Any],
+    settings: dict[str, Any],
+    *,
+    inline_css: bool = False,
+    sim_time: str | None = None,
+    mock_override: bool | None = None,
+    token: str = "",
+) -> str:
+    is_lockscreen = screen_id.startswith("lockscreen_")
+    template = templates.get_template("kindle_shell.html")
+    return template.render(
+        screen=screen_id,
+        is_lockscreen=is_lockscreen,
+        inline_css=_read_kindle_css() if inline_css else "",
+        bundle=bundle,
+        cal=bundle["calendar"],
+        weather=bundle["weather"],
+        briefing=bundle["briefing"],
+        tasks=bundle["tasks"],
+        pomo=bundle["pomodoro"],
+        tiles=bundle["tiles"],
+        settings=settings,
+        sim_time=sim_time or "",
+        mock_override="" if mock_override is None else ("1" if mock_override else "0"),
+        token=token,
+        device_width=KINDLE_WIDTH,
+        device_height=KINDLE_HEIGHT,
+    )
+
+
 async def _render_kindle_html(
     screen: str,
     sim_time: str | None = None,
@@ -162,26 +210,14 @@ async def _render_kindle_html(
         force_refresh=force_refresh,
         consume_pomo_alert=consume_pomo_alert,
     )
-
-    is_lockscreen = screen_id.startswith("lockscreen_")
-    template = templates.get_template("kindle_shell.html")
-    html = template.render(
-        screen=screen_id,
-        is_lockscreen=is_lockscreen,
-        inline_css=_read_kindle_css() if inline_css else "",
-        bundle=bundle,
-        cal=bundle["calendar"],
-        weather=bundle["weather"],
-        briefing=bundle["briefing"],
-        tasks=bundle["tasks"],
-        pomo=bundle["pomodoro"],
-        tiles=bundle["tiles"],
-        settings=settings,
-        sim_time=sim_time or "",
-        mock_override="" if mock_override is None else ("1" if mock_override else "0"),
+    html = _render_html_from_bundle(
+        screen_id,
+        bundle,
+        settings,
+        inline_css=inline_css,
+        sim_time=sim_time,
+        mock_override=mock_override,
         token=token,
-        device_width=KINDLE_WIDTH,
-        device_height=KINDLE_HEIGHT,
     )
     return html, bundle
 
@@ -398,6 +434,233 @@ async def handle_interactive_action(
         now=now,
     )
     return result
+
+
+# ---------- Offline-First Sync Protocol (Single-Shot Bundle + Queued Outbox Replay) ----------
+
+
+@app.post("/api/sync/batch")
+async def api_sync_batch(
+    payload: SyncBatchPayload,
+    _: None = Depends(require_auth),
+):
+    """Replay queued offline actions from the Kindle (task toggles, clears, etc.) and clear feed caches."""
+    settings = db.get_all_settings()
+    now = calendar_svc.get_local_now(settings["timezone"])
+    applied = 0
+    for item in payload.actions:
+        act = (item.action or "").strip()
+        if not act or act == "system:exit":
+            continue
+        await dispatch_action(
+            action=act,
+            current_screen=item.current_screen or "home",
+            settings=settings,
+            now=now,
+        )
+        applied += 1
+
+    if payload.refresh_feeds:
+        calendar_svc.clear_ics_cache()
+        google_cal_svc.clear_google_events_cache()
+        weather_svc.clear_weather_cache()
+
+    return {
+        "ok": True,
+        "applied": applied,
+        "server_time_unix": int(time.time()),
+    }
+
+
+@app.get("/api/offline-bundle")
+async def api_offline_bundle(
+    force_refresh: bool = Query(default=True),
+    include_slots: bool = Query(default=True),
+    sim_time: str | None = Query(default=None),
+    mock: bool | None = Query(default=None),
+    _: None = Depends(require_auth),
+):
+    """Return a single ZIP containing all 8 rendered Kindle screens, hitboxes, layout rects, and time-sliced lock screens."""
+    settings = _effective_settings(mock)
+    now = calendar_svc.get_local_now(settings["timezone"], sim_time=sim_time)
+
+    if force_refresh:
+        calendar_svc.clear_ics_cache()
+        google_cal_svc.clear_google_events_cache()
+        weather_svc.clear_weather_cache()
+
+    base_bundle = await build_data_bundle(settings, now, force_refresh=force_refresh)
+
+    html_items: list[tuple[str, str]] = []
+    for scr in OFFLINE_SCREENS:
+        html_items.append(
+            (
+                f"screen:{scr}",
+                _render_html_from_bundle(
+                    scr,
+                    base_bundle,
+                    settings,
+                    inline_css=True,
+                    sim_time=sim_time,
+                    mock_override=mock,
+                ),
+            )
+        )
+
+    # Default lock screen right now
+    default_slide = resolve_lockscreen_slide(settings, now, requested="auto", advance=False)
+    html_items.append(
+        (
+            "lock:default",
+            _render_html_from_bundle(
+                f"lockscreen_{default_slide}",
+                base_bundle,
+                settings,
+                inline_css=True,
+                sim_time=sim_time,
+                mock_override=mock,
+            ),
+        )
+    )
+
+    # Time-sliced Smart Lock Screens for today's upcoming event transitions
+    slot_defs: list[dict[str, Any]] = []
+    if include_slots and settings.get("lockscreen_mode", "smart") != "cycle":
+        raw_slots = calendar_svc.compute_lockscreen_time_slots(base_bundle["calendar"], now, max_slots=10)
+        for slot in raw_slots:
+            slot_dt: datetime = slot["dt"]
+            slot_cal = calendar_svc.reclassify_calendar_context(base_bundle["calendar"], slot_dt)
+            slot_bundle = {
+                **base_bundle,
+                "now": slot_dt,
+                "date_long": slot_dt.strftime("%A, %b %d"),
+                "date_short": slot_dt.strftime("%a, %b %d").upper(),
+                "time_str": slot_dt.strftime("%H:%M"),
+                "calendar": slot_cal,
+            }
+            slot_slide = resolve_lockscreen_slide(settings, slot_dt, requested="auto", advance=False)
+            key = f"lock:{slot['id']}"
+            html_items.append(
+                (
+                    key,
+                    _render_html_from_bundle(
+                        f"lockscreen_{slot_slide}",
+                        slot_bundle,
+                        settings,
+                        inline_css=True,
+                        sim_time=slot_dt.strftime("%H:%M"),
+                        mock_override=mock,
+                    ),
+                )
+            )
+            slot_defs.append(
+                {
+                    "id": slot["id"],
+                    "key": key,
+                    "file": f"lockscreens/{slot['id']}.png",
+                    "start_unix": slot["start_unix"],
+                    "end_unix": slot["end_unix"],
+                    "label": slot["label"],
+                }
+            )
+
+    # Cycle-mode slides if enabled
+    cycle_defs: list[dict[str, str]] = []
+    if settings.get("lockscreen_mode") == "cycle":
+        valid_slides = {"smart", "calendar", "planning", "weather"}
+        slides = [s for s in settings.get("lockscreen_slides", ["smart"]) if s in valid_slides] or ["smart"]
+        for s in slides:
+            key = f"lock:cycle_{s}"
+            html_items.append(
+                (
+                    key,
+                    _render_html_from_bundle(
+                        f"lockscreen_{s}",
+                        base_bundle,
+                        settings,
+                        inline_css=True,
+                        sim_time=sim_time,
+                        mock_override=mock,
+                    ),
+                )
+            )
+            cycle_defs.append({"id": s, "key": key, "file": f"lockscreens/cycle_{s}.png"})
+
+    rendered_map = await renderer.render_batch(html_items)
+
+    screens_manifest: dict[str, Any] = {}
+    for scr in OFFLINE_SCREENS:
+        rend = rendered_map[f"screen:{scr}"]
+        screens_manifest[scr] = {
+            "file": f"screens/{scr}.png",
+            "etag": rend.etag,
+            "hitboxes": rend.hitboxes,
+            "layout": rend.layout,
+        }
+
+    pomo = base_bundle["pomodoro"]
+    tz_offset = int((now.utcoffset().total_seconds()) if now.utcoffset() else 0)
+    manifest = {
+        "version": 1,
+        "synced_at_unix": int(time.time()),
+        "synced_at_label": now.strftime("%H:%M"),
+        "date_short": base_bundle["date_short"],
+        "timezone": settings["timezone"],
+        "tz_offset_sec": tz_offset,
+        "lockscreen_mode": settings.get("lockscreen_mode", "smart"),
+        "lockscreen_default": "lockscreens/default.png",
+        "lockscreen_slots": [
+            {
+                "id": s["id"],
+                "file": s["file"],
+                "start_unix": s["start_unix"],
+                "end_unix": s["end_unix"],
+                "label": s["label"],
+            }
+            for s in slot_defs
+        ],
+        "lockscreen_cycle_files": [c["file"] for c in cycle_defs],
+        "screens": screens_manifest,
+        "tasks": [
+            {
+                "id": t["id"],
+                "title": t["title"],
+                "completed": bool(t["completed"]),
+                "priority": int(t["priority"]),
+            }
+            for t in base_bundle["tasks"]
+        ],
+        "pomodoro": {
+            "mode": pomo["mode"],
+            "status": pomo["status"],
+            "mode_label": pomo["mode_label"],
+            "duration_sec": int(pomo["duration_sec"]),
+            "remaining_sec": int(pomo["remaining_sec"]),
+            "completed_sessions": int(pomo["completed_sessions"]),
+        },
+    }
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("manifest.json", json.dumps(manifest, separators=(",", ":")))
+        for scr in OFFLINE_SCREENS:
+            zf.writestr(f"screens/{scr}.png", rendered_map[f"screen:{scr}"].png_bytes)
+        zf.writestr("lockscreens/default.png", rendered_map["lock:default"].png_bytes)
+        for s in slot_defs:
+            zf.writestr(s["file"], rendered_map[s["key"]].png_bytes)
+        for c in cycle_defs:
+            zf.writestr(c["file"], rendered_map[c["key"]].png_bytes)
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": 'attachment; filename="hermes_offline_bundle.zip"',
+            "X-Hermes-Bundle-Screens": str(len(OFFLINE_SCREENS)),
+            "X-Hermes-Lockscreen-Slots": str(len(slot_defs)),
+        },
+    )
 
 
 # ---------- Smart Context-Aware Lock Screen Renderer ----------
