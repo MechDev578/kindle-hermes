@@ -158,14 +158,13 @@ func main() {
 	store := NewOfflineStore(cfg.CacheDir, fallbackLockPNG)
 
 	var (
-		mu            sync.Mutex
+		mu           sync.Mutex
 		currentScreen = "home"
-		hitboxes      []Hitbox
-		isLocked      = false
-		pomoDirty     = false
-		syncInFlight  = false
-		bannerMsg     = ""
-		bannerUntil   time.Time
+		hitboxes     []Hitbox
+		pomoDirty    = false
+		syncInFlight = false
+		bannerMsg    = ""
+		bannerUntil  time.Time
 	)
 
 	var paintMu sync.Mutex
@@ -183,6 +182,15 @@ func main() {
 		_ = exec.Command(cfg.FBInkBin, args...).Run()
 	}
 
+	lockCtrl := NewLockController(
+		store.PickLockScreenPNG,
+		func(pngPath string, fullFlash bool) {
+			paintFile(pngPath, fullFlash, false)
+		},
+		nil,
+		defaultLockTimings(),
+	)
+
 	renderCurrent := func(screenID string, fullFlash, invertFlash bool) bool {
 		scr, basePath, ok := store.GetScreen(screenID)
 		if !ok {
@@ -194,7 +202,6 @@ func main() {
 		mu.Lock()
 		currentScreen = screenID
 		hitboxes = scr.Hitboxes
-		lockedNow := isLocked
 		pDirty := pomoDirty || pomoNow.Status == "running" || pomoNow.Status == "paused" || pomoNow.Status == "completed"
 		activeBanner := ""
 		if bannerMsg != "" && (bannerUntil.IsZero() || time.Now().Before(bannerUntil)) {
@@ -208,12 +215,14 @@ func main() {
 			fmt.Fprintf(os.Stderr, "[render] overlay error: %v\n", err)
 			return false
 		}
-		if !lockedNow {
+		if !lockCtrl.IsLocked() {
 			if invertFlash {
 				paintFile(tmpScreenPNG, true, true)
 				time.Sleep(350 * time.Millisecond)
 			}
-			paintFile(tmpScreenPNG, fullFlash, false)
+			if !lockCtrl.IsLocked() {
+				paintFile(tmpScreenPNG, fullFlash, false)
+			}
 		}
 		return true
 	}
@@ -239,9 +248,8 @@ func main() {
 					bannerUntil = time.Time{}
 				}
 				cur := currentScreen
-				locked := isLocked
 				mu.Unlock()
-				if stillSame && !locked {
+				if stillSame && !lockCtrl.IsLocked() {
 					renderCurrent(cur, false, false)
 				}
 			}(msg)
@@ -288,7 +296,6 @@ func main() {
 			pomoDirty = false
 		}
 		cur := currentScreen
-		locked := isLocked
 		mu.Unlock()
 
 		if manual {
@@ -299,7 +306,7 @@ func main() {
 			} else {
 				setBannerAndRepaint(fmt.Sprintf("SYNCED VIA %s", label), 2200*time.Millisecond, true)
 			}
-		} else if !locked {
+		} else if !lockCtrl.IsLocked() {
 			// Silent background sync finished while user is viewing app -> gently repaint with fresh data
 			renderCurrent(cur, false, false)
 		}
@@ -438,54 +445,36 @@ func main() {
 		case evLine := <-powerCh:
 			switch {
 			case strings.Contains(evLine, "goingToScreenSaver"):
-				mu.Lock()
-				isLocked = true
-				mu.Unlock()
-				// Pick the exact time-sliced Smart Lock Screen for right now (works 100% offline!)
-				pngPath := store.PickLockScreenPNG(time.Now().Unix(), true)
-				// Wait briefly so Amazon's default screensaver finishes its draw, then overwrite cleanly
-				time.Sleep(650 * time.Millisecond)
-				if pngPath != "" {
-					paintFile(pngPath, true, false)
-				}
+				lockCtrl.OnGoingToScreenSaver(time.Now().Unix())
 
 			case strings.Contains(evLine, "readyToSuspend"):
-				mu.Lock()
-				locked := isLocked
-				mu.Unlock()
-				if locked {
-					if pngPath := store.PickLockScreenPNG(time.Now().Unix(), false); pngPath != "" {
-						paintFile(pngPath, true, false)
-					}
-				}
+				lockCtrl.OnReadyToSuspend(time.Now().Unix())
 
 			case strings.Contains(evLine, "outOfScreenSaver"):
+				unlockGen := lockCtrl.OnOutOfScreenSaver()
 				mu.Lock()
-				isLocked = false
 				scr := currentScreen
 				mu.Unlock()
-				// Instant resume from local cache (zero Wi-Fi required)
-				time.Sleep(450 * time.Millisecond)
-				renderCurrent(scr, true, false)
-				// Opportunistically refresh in background only if Wi-Fi reconnects
-				go func() {
-					time.Sleep(2500 * time.Millisecond)
-					mu.Lock()
-					stillUnlocked := !isLocked
-					mu.Unlock()
-					if stillUnlocked {
+				go func(expectedGen uint64, screenID string) {
+					// Instant resume from local cache (zero Wi-Fi required)
+					time.Sleep(450 * time.Millisecond)
+					if lockCtrl.IsUnlockedGen(expectedGen) {
+						renderCurrent(screenID, true, false)
+					}
+					// Opportunistically refresh in background only if Wi-Fi reconnects
+					time.Sleep(2200 * time.Millisecond)
+					if lockCtrl.IsUnlockedGen(expectedGen) {
 						runSync(false)
 					}
-				}()
+				}(unlockGen, scr)
 			}
 
 		case <-pomoTicker.C:
 			pNow, completed := store.ComputePomoNow(time.Now().Unix())
 			mu.Lock()
-			locked := isLocked
 			scr := currentScreen
 			mu.Unlock()
-			if !locked && (pNow.Status == "running" || completed) {
+			if !lockCtrl.IsLocked() && (pNow.Status == "running" || completed) {
 				if scr == "pomodoro" || completed {
 					mu.Lock()
 					pomoDirty = true
@@ -496,11 +485,10 @@ func main() {
 
 		case pt := <-tapCh:
 			mu.Lock()
-			locked := isLocked
 			scr := currentScreen
 			boxes := hitboxes
 			mu.Unlock()
-			if locked {
+			if lockCtrl.IsLocked() {
 				continue
 			}
 

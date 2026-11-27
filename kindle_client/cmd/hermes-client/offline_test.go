@@ -9,7 +9,10 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -371,5 +374,115 @@ func TestOfflineDeutschDeckClassicsRootsAndQuiz(t *testing.T) {
 	_, pReloadedRoot, ok := reloaded.GetScreen("deutsch_root")
 	if !ok || filepath.Base(pReloadedRoot) != "r1.png" {
 		t.Fatalf("expected root pack index to persist after offline restart, got %s", pReloadedRoot)
+	}
+}
+
+func fastTestLockTimings() LockTimings {
+	return LockTimings{
+		PollInterval:      10 * time.Millisecond,
+		AmazonWaitMax:     220 * time.Millisecond,
+		AmazonNoChangeMax: 120 * time.Millisecond,
+		SettleDuration:    30 * time.Millisecond,
+		FallbackDelay:     60 * time.Millisecond,
+		PostPaintSettle:   10 * time.Millisecond,
+		WatchDuration:     160 * time.Millisecond,
+		WatchPoll:         15 * time.Millisecond,
+		MaxWatchRepaints:  2,
+	}
+}
+
+func TestLockControllerBeatsAmazonWallpaperAndNeverLoopsOnSuspend(t *testing.T) {
+	var (
+		fbHash   atomic.Uint64
+		paintsMu sync.Mutex
+		paints   []string
+	)
+	fbHash.Store(100) // Hermes app screen initially in /dev/fb0
+
+	lc := NewLockController(
+		func(nowUnix int64, advanceCycle bool) string {
+			if nowUnix >= 2000 {
+				return "lockscreens/slot_1.png"
+			}
+			return "lockscreens/slot_0.png"
+		},
+		func(pngPath string, fullFlash bool) {
+			paintsMu.Lock()
+			paints = append(paints, pngPath)
+			paintsMu.Unlock()
+			if pngPath == "lockscreens/slot_1.png" {
+				fbHash.Store(300)
+			} else {
+				fbHash.Store(200)
+			}
+		},
+		func() (uint64, bool) { return fbHash.Load(), true },
+		fastTestLockTimings(),
+	)
+	lc.logFn = func(string, ...any) {}
+
+	// 1. User presses power button -> Amazon stock blanket draws wallpaper 40ms later
+	lc.OnGoingToScreenSaver(1000)
+	time.Sleep(40 * time.Millisecond)
+	fbHash.Store(999) // Amazon stock wallpaper hits /dev/fb0
+
+	// Wait for Phase A settle + Phase B paint
+	time.Sleep(90 * time.Millisecond)
+	paintsMu.Lock()
+	countAfterInitial := len(paints)
+	paintsMu.Unlock()
+	if countAfterInitial != 1 || fbHash.Load() != 200 {
+		t.Fatalf("expected 1 paint restoring fbHash=200 after Amazon draw, got count=%d fb=%d", countAfterInitial, fbHash.Load())
+	}
+
+	// 2. Simulate late second-pass Amazon wallpaper overwrite during Phase C watchdog
+	fbHash.Store(888)
+	time.Sleep(100 * time.Millisecond)
+	paintsMu.Lock()
+	countAfterRecovery := len(paints)
+	paintsMu.Unlock()
+	if countAfterRecovery != 2 || fbHash.Load() != 200 {
+		t.Fatalf("expected watchdog to restore fbHash=200 once (count=2), got count=%d fb=%d", countAfterRecovery, fbHash.Load())
+	}
+
+	// Wait for watchdog window to close cleanly
+	time.Sleep(180 * time.Millisecond)
+
+	// 3. Kindle powerd fires readyToSuspend 10 times (e.g. retries / USB plugged in):
+	//    Because framebuffer already matches Hermes lock screen, ZERO extra paints should occur!
+	for i := 0; i < 10; i++ {
+		lc.OnReadyToSuspend(1060 + int64(i*5))
+	}
+	paintsMu.Lock()
+	countAfterSuspendSpam := len(paints)
+	paintsMu.Unlock()
+	if countAfterSuspendSpam != 2 {
+		t.Fatalf("expected ZERO repaints on repeated readyToSuspend when screen intact, got %d total paints", countAfterSuspendSpam)
+	}
+
+	// 4. Meeting time slot rolls over while asleep (slot_0 -> slot_1):
+	//    readyToSuspend paints slot_1 AT MOST ONCE even across repeated readyToSuspend retries!
+	for i := 0; i < 5; i++ {
+		lc.OnReadyToSuspend(2005 + int64(i*5))
+	}
+	paintsMu.Lock()
+	countAfterSlotChange := len(paints)
+	lastPainted := paints[len(paints)-1]
+	paintsMu.Unlock()
+	if countAfterSlotChange != 3 || lastPainted != "lockscreens/slot_1.png" {
+		t.Fatalf("expected exactly 1 paint for new slot_1.png (total 3), got total=%d last=%s", countAfterSlotChange, lastPainted)
+	}
+
+	// 5. Fast unlock cancels pending lock paint immediately
+	lc.OnOutOfScreenSaver()
+	lc.OnGoingToScreenSaver(2100)
+	time.Sleep(15 * time.Millisecond)
+	lc.OnOutOfScreenSaver()
+	time.Sleep(120 * time.Millisecond)
+	paintsMu.Lock()
+	countAfterCancel := len(paints)
+	paintsMu.Unlock()
+	if countAfterCancel != 3 {
+		t.Fatalf("expected fast unlock to cancel lock paint (still 3), got %d", countAfterCancel)
 	}
 }
