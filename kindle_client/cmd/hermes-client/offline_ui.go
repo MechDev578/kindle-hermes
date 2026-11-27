@@ -53,13 +53,18 @@ var font5x7 = map[rune][7]uint8{
 	':': {0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00},
 	'-': {0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00},
 	'.': {0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C},
+	',': {0x00, 0x00, 0x00, 0x00, 0x06, 0x04, 0x08},
 	'·': {0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00},
 	'/': {0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10},
+	'%': {0x18, 0x19, 0x02, 0x04, 0x08, 0x13, 0x03},
 	'!': {0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04},
 	'+': {0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00},
 	'?': {0x0E, 0x11, 0x01, 0x06, 0x04, 0x00, 0x04},
 	' ': {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
 }
+
+// Fast PNG encoder for transient /tmp/hermes_*.png framebuffer files (~5-6x faster on ARMv7).
+var fastPNGEncoder = png.Encoder{CompressionLevel: png.BestSpeed}
 
 func loadGrayPNG(path string) (*image.Gray, error) {
 	f, err := os.Open(path)
@@ -83,7 +88,7 @@ func saveGrayPNG(path string, img *image.Gray) error {
 	if err != nil {
 		return err
 	}
-	if err := png.Encode(f, img); err != nil {
+	if err := fastPNGEncoder.Encode(f, img); err != nil {
 		f.Close()
 		return err
 	}
@@ -136,17 +141,7 @@ func absInt(x int) int {
 	return x
 }
 
-func measureText5x7(text string, scale int) (int, int) {
-	runes := []rune(text)
-	if len(runes) == 0 {
-		return 0, 0
-	}
-	w := len(runes)*(6*scale) - scale
-	h := 7 * scale
-	return w, h
-}
-
-func drawCenteredText5x7(img *image.Gray, box Rect, text string, scale int, v uint8) {
+func normalizeText5x7(text string) string {
 	// Preserve lowercase 'm' for Pomodoro "25m", uppercase everything else
 	var sb strings.Builder
 	for _, r := range text {
@@ -158,11 +153,21 @@ func drawCenteredText5x7(img *image.Gray, box Rect, text string, scale int, v ui
 			sb.WriteRune(r)
 		}
 	}
-	clean := sb.String()
-	tw, th := measureText5x7(clean, scale)
-	startX := box.X + (box.W-tw)/2
-	startY := box.Y + (box.H-th)/2
+	return sb.String()
+}
 
+func measureText5x7(text string, scale int) (int, int) {
+	runes := []rune(normalizeText5x7(text))
+	if len(runes) == 0 {
+		return 0, 0
+	}
+	w := len(runes)*(6*scale) - scale
+	h := 7 * scale
+	return w, h
+}
+
+func drawText5x7At(img *image.Gray, startX, startY int, text string, scale int, v uint8) {
+	clean := normalizeText5x7(text)
 	curX := startX
 	for _, r := range clean {
 		glyph, ok := font5x7[r]
@@ -181,23 +186,267 @@ func drawCenteredText5x7(img *image.Gray, box Rect, text string, scale int, v ui
 	}
 }
 
-// ApplyOfflineOverlays composites local task checkbox toggles, live offline Pomodoro state,
-// and an optional status banner onto a cached 1072x1448 grayscale PNG.
-func ApplyOfflineOverlays(
-	basePNGPath string,
-	outPNGPath string,
-	screenID string,
-	scr CachedScreen,
-	taskStates map[int]bool,
-	pomo PomoState,
-	pomoDirty bool,
-	bannerMsg string,
-) error {
-	needsTaskOverlay := (screenID == "planner" || screenID == "today") && len(taskStates) > 0
-	needsPomoOverlay := (screenID == "pomodoro") && pomoDirty && scr.Layout.Pomo != nil
-	needsBanner := strings.TrimSpace(bannerMsg) != ""
+func drawCenteredText5x7(img *image.Gray, box Rect, text string, scale int, v uint8) {
+	tw, th := measureText5x7(text, scale)
+	startX := box.X + (box.W-tw)/2
+	startY := box.Y + (box.H-th)/2
+	drawText5x7At(img, startX, startY, text, scale, v)
+}
 
-	if !needsTaskOverlay && !needsPomoOverlay && !needsBanner {
+// drawDisk fills a crisp circle of radius r centered at (cx, cy) for smooth geometric vector strokes.
+func drawDisk(img *image.Gray, cx, cy, r int, v uint8) {
+	b := img.Bounds()
+	c := color.Gray{Y: v}
+	r2 := r * r
+	for dy := -r; dy <= r; dy++ {
+		py := cy + dy
+		if py < b.Min.Y || py >= b.Max.Y {
+			continue
+		}
+		for dx := -r; dx <= r; dx++ {
+			if dx*dx+dy*dy <= r2 {
+				px := cx + dx
+				if px >= b.Min.X && px < b.Max.X {
+					img.SetGray(px, py, c)
+				}
+			}
+		}
+	}
+}
+
+func drawRoundLine(img *image.Gray, x0, y0, x1, y1, r int, v uint8) {
+	dx := x1 - x0
+	dy := y1 - y0
+	steps := maxInt(absInt(dx), absInt(dy))
+	if steps == 0 {
+		drawDisk(img, x0, y0, r, v)
+		return
+	}
+	for i := 0; i <= steps; i++ {
+		px := x0 + (dx*i)/steps
+		py := y0 + (dy*i)/steps
+		drawDisk(img, px, py, r, v)
+	}
+}
+
+// measureCrispClock computes exact pixel width of an "HH:MM" string drawn with drawCrispClock.
+func measureCrispClock(text string, h int) int {
+	digitW := (h * 60) / 100
+	colonW := (h * 26) / 100
+	gap := maxInt(4, (h*16)/100)
+	total := 0
+	for i, ch := range text {
+		if i > 0 {
+			total += gap
+		}
+		if ch == ':' {
+			total += colonW
+		} else {
+			total += digitW
+		}
+	}
+	return total
+}
+
+// drawCrispClock renders high-DPI smooth Swiss-grotesque digits ('0'-'9' and ':') at any height h
+// with zero pixel-blockiness on 300 PPI E-Ink.
+func drawCrispClock(img *image.Gray, x, y, h int, text string, v uint8) int {
+	digitW := (h * 60) / 100
+	colonW := (h * 26) / 100
+	gap := maxInt(4, (h*16)/100)
+	r := maxInt(2, (h*85)/1000) // stroke half-width (~17% of cap height => clean bold sans-serif)
+	curX := x
+
+	// Map normalized [0..100] x [0..100] glyph coordinates into pixel space inside (gx, gy, digitW, h)
+	pt := func(gx, nx, ny int) (int, int) {
+		ix := gx + r + ((digitW-2*r)*nx)/100
+		iy := y + r + ((h-2*r)*ny)/100
+		return ix, iy
+	}
+	poly := func(gx int, coords ...[2]int) {
+		for i := 0; i < len(coords)-1; i++ {
+			x0, y0 := pt(gx, coords[i][0], coords[i][1])
+			x1, y1 := pt(gx, coords[i+1][0], coords[i+1][1])
+			drawRoundLine(img, x0, y0, x1, y1, r, v)
+		}
+	}
+
+	for i, ch := range text {
+		if i > 0 {
+			curX += gap
+		}
+		if ch == ':' {
+			cx := curX + colonW/2
+			cr := maxInt(2, r+1)
+			drawDisk(img, cx, y+(h*32)/100, cr, v)
+			drawDisk(img, cx, y+(h*70)/100, cr, v)
+			curX += colonW
+			continue
+		}
+		switch ch {
+		case '0':
+			poly(curX, [2]int{20, 0}, [2]int{80, 0}, [2]int{100, 18}, [2]int{100, 82}, [2]int{80, 100}, [2]int{20, 100}, [2]int{0, 82}, [2]int{0, 18}, [2]int{20, 0})
+		case '1':
+			poly(curX, [2]int{20, 18}, [2]int{56, 0}, [2]int{56, 100})
+			poly(curX, [2]int{18, 100}, [2]int{90, 100})
+		case '2':
+			poly(curX, [2]int{4, 22}, [2]int{22, 0}, [2]int{78, 0}, [2]int{98, 18}, [2]int{98, 36}, [2]int{80, 52}, [2]int{4, 100}, [2]int{100, 100})
+		case '3':
+			poly(curX, [2]int{8, 14}, [2]int{26, 0}, [2]int{78, 0}, [2]int{96, 16}, [2]int{96, 36}, [2]int{76, 48}, [2]int{36, 48})
+			poly(curX, [2]int{76, 48}, [2]int{100, 62}, [2]int{100, 84}, [2]int{78, 100}, [2]int{24, 100}, [2]int{4, 86})
+		case '4':
+			poly(curX, [2]int{74, 100}, [2]int{74, 0}, [2]int{2, 68}, [2]int{100, 68})
+		case '5':
+			poly(curX, [2]int{94, 0}, [2]int{10, 0}, [2]int{6, 46}, [2]int{26, 38}, [2]int{78, 38}, [2]int{98, 54}, [2]int{98, 82}, [2]int{78, 100}, [2]int{22, 100}, [2]int{4, 86})
+		case '6':
+			poly(curX, [2]int{88, 12}, [2]int{72, 0}, [2]int{28, 0}, [2]int{4, 22}, [2]int{2, 82}, [2]int{24, 100}, [2]int{78, 100}, [2]int{98, 82}, [2]int{98, 58}, [2]int{78, 44}, [2]int{24, 44}, [2]int{4, 58})
+		case '7':
+			poly(curX, [2]int{2, 0}, [2]int{98, 0}, [2]int{42, 100})
+		case '8':
+			poly(curX, [2]int{24, 48}, [2]int{6, 36}, [2]int{6, 16}, [2]int{24, 0}, [2]int{76, 0}, [2]int{94, 16}, [2]int{94, 36}, [2]int{76, 48}, [2]int{24, 48})
+			poly(curX, [2]int{24, 48}, [2]int{2, 62}, [2]int{2, 84}, [2]int{24, 100}, [2]int{76, 100}, [2]int{98, 84}, [2]int{98, 62}, [2]int{76, 48})
+		case '9':
+			poly(curX, [2]int{12, 88}, [2]int{28, 100}, [2]int{72, 100}, [2]int{96, 78}, [2]int{98, 18}, [2]int{76, 0}, [2]int{22, 0}, [2]int{2, 18}, [2]int{2, 42}, [2]int{22, 56}, [2]int{76, 56}, [2]int{96, 42})
+		}
+		curX += digitW
+	}
+	return curX - x
+}
+
+// drawBatteryIcon renders a crisp monochrome e-ink battery gauge with proportional fill & right terminal nub.
+func drawBatteryIcon(img *image.Gray, x, y, w, h, pct int, charging bool) {
+	nubW := 4
+	bodyW := w - nubW
+	if bodyW < 14 {
+		bodyW = 14
+	}
+	pct = clampInt(pct, 0, 100)
+
+	// Pure white body + 3px black border
+	fillRect(img, x, y, bodyW, h, 255)
+	strokeRect(img, x, y, bodyW, h, 3, 0)
+
+	// Right positive terminal nub
+	nubH := h / 2
+	if nubH < 8 {
+		nubH = 8
+	}
+	fillRect(img, x+bodyW, y+(h-nubH)/2, nubW, nubH, 0)
+
+	// Proportional inner charge bar
+	pad := 5
+	innerW := bodyW - 2*pad
+	innerH := h - 2*pad
+	if innerW > 0 && innerH > 0 {
+		fillW := (innerW * pct) / 100
+		if pct > 0 && fillW < 3 {
+			fillW = 3
+		}
+		if fillW > 0 {
+			fillRect(img, x+pad, y+pad, fillW, innerH, 0)
+		}
+	}
+
+	// Small high-contrast charging cross/bolt indicator centered on the body
+	if charging {
+		cx := x + bodyW/2
+		cy := y + h/2
+		fillRect(img, cx-4, cy-4, 9, 9, 255)
+		fillRect(img, cx-3, cy-1, 7, 2, 0)
+		fillRect(img, cx-1, cy-3, 2, 7, 0)
+	}
+}
+
+// drawLiveTopClock stamps live Kindle date, bold current HH:MM time, and hardware battery % into the topbar.
+func drawLiveTopClock(img *image.Gray, box Rect, status DeviceStatus) {
+	if status.TimeStr == "" {
+		return
+	}
+	// Clear only the top-clock row, keeping the weather submeta line cleanly below it.
+	clearX := box.X - 6
+	clearY := box.Y - 4
+	clearW := box.W + 12
+	clearH := box.H + 6
+	if clearY < 4 {
+		clearY = 4
+	}
+	if clearY+clearH > 52 {
+		clearH = 52 - clearY
+	}
+	if clearH < 28 {
+		clearH = 34
+	}
+	fillRect(img, clearX, clearY, clearW, clearH, 255)
+
+	dateScale := 3
+	timeH := 28
+	battScale := 3
+
+	dateW, dateH := measureText5x7(status.DateStr, dateScale)
+	timeW := measureCrispClock(status.TimeStr, timeH)
+	sepW := 28 // dot separator + clean breathing room
+
+	hasBatt := status.Battery >= 0 && status.Battery <= 100
+	battText := ""
+	battIconW := 40
+	battIconH := 20
+	battTextW := 0
+	battBlockW := 0
+	lowBatt := hasBatt && status.Battery <= 15 && !status.Charging
+	if hasBatt {
+		if status.Charging {
+			battText = fmt.Sprintf("%d%%+", status.Battery)
+		} else {
+			battText = fmt.Sprintf("%d%%", status.Battery)
+		}
+		battTextW, _ = measureText5x7(battText, battScale)
+		battBlockW = battIconW + 10 + battTextW
+		if lowBatt {
+			battBlockW += 16 // pill padding
+		}
+	}
+
+	totalW := dateW + sepW + timeW
+	if hasBatt {
+		totalW += sepW + battBlockW
+	}
+
+	curX := box.X + (box.W-totalW)/2
+	centerY := clearY + clearH/2
+
+	// 1. Date (charcoal)
+	drawText5x7At(img, curX, centerY-dateH/2+1, status.DateStr, dateScale, 51)
+	curX += dateW
+
+	// Separator dot
+	fillRect(img, curX+sepW/2-2, centerY-2, 4, 4, 102)
+	curX += sepW
+
+	// 2. Crisp Bold Live Kindle Time (smooth geometric digits, pure black)
+	drawCrispClock(img, curX, centerY-timeH/2, timeH, status.TimeStr, 0)
+	curX += timeW
+
+	// 3. Hardware Battery Gauge + Percent
+	if hasBatt {
+		fillRect(img, curX+sepW/2-2, centerY-2, 4, 4, 102)
+		curX += sepW
+
+		if lowBatt {
+			// High-visibility inverted pill when battery <= 15%
+			pillY := centerY - 14
+			fillRect(img, curX, pillY, battBlockW, 28, 0)
+			drawCenteredText5x7(img, Rect{X: curX, Y: pillY, W: battBlockW, H: 28}, fmt.Sprintf("! %d%%", status.Battery), battScale, 255)
+		} else {
+			drawBatteryIcon(img, curX, centerY-battIconH/2, battIconW, battIconH, status.Battery, status.Charging)
+			curX += battIconW + 10
+			drawText5x7At(img, curX, centerY-dateH/2+1, battText, battScale, 0)
+		}
+	}
+}
+
+// ApplyLockScreenOverlays stamps live Kindle HH:MM time, date, and battery % onto any Smart Lock Screen PNG.
+func ApplyLockScreenOverlays(basePNGPath, outPNGPath string, status DeviceStatus) error {
+	if status.TimeStr == "" {
 		data, err := os.ReadFile(basePNGPath)
 		if err != nil {
 			return err
@@ -208,6 +457,81 @@ func ApplyOfflineOverlays(
 	img, err := loadGrayPNG(basePNGPath)
 	if err != nil {
 		return err
+	}
+
+	// All 5 lockscreen templates share identical .ls-header-left geometry: x=32..608, y=0..118 (border at y=119..123).
+	fillRect(img, 28, 10, 574, 104, 255)
+
+	// 1. Large crisp live Kindle time (52px smooth Swiss grotesque digits, matches 56px editorial header)
+	timeH := 52
+	timeW := measureCrispClock(status.TimeStr, timeH)
+	timeX := 34
+	timeY := (118 - timeH) / 2
+	drawCrispClock(img, timeX, timeY, timeH, status.TimeStr, 0)
+
+	// 2. Clean hairline divider separating clock from date + battery
+	divX := timeX + timeW + 24
+	fillRect(img, divX, 30, 3, 58, 102)
+
+	// 3. Stacked Date (top) + Battery Gauge & % (bottom)
+	metaX := divX + 22
+	hasBatt := status.Battery >= 0 && status.Battery <= 100
+	if hasBatt {
+		drawText5x7At(img, metaX, 31, status.DateStr, 3, 34)
+		battY := 64
+		drawBatteryIcon(img, metaX, battY, 42, 20, status.Battery, status.Charging)
+		battLabel := fmt.Sprintf("%d%%", status.Battery)
+		if status.Charging {
+			battLabel = fmt.Sprintf("%d%% CHG", status.Battery)
+		} else if status.Battery <= 15 {
+			battLabel = fmt.Sprintf("%d%% LOW", status.Battery)
+		}
+		drawText5x7At(img, metaX+52, battY, battLabel, 3, 0)
+	} else {
+		_, dh := measureText5x7(status.DateStr, 3)
+		drawText5x7At(img, metaX, (118-dh)/2, status.DateStr, 3, 34)
+	}
+
+	return saveGrayPNG(outPNGPath, img)
+}
+
+// ApplyOfflineOverlays composites live Kindle clock + battery %, local task checkbox toggles,
+// live offline Pomodoro state, and an optional status banner onto a cached 1072x1448 grayscale PNG.
+func ApplyOfflineOverlays(
+	basePNGPath string,
+	outPNGPath string,
+	screenID string,
+	scr CachedScreen,
+	taskStates map[int]bool,
+	pomo PomoState,
+	pomoDirty bool,
+	bannerMsg string,
+	status DeviceStatus,
+) error {
+	needsClock := status.TimeStr != ""
+	needsTaskOverlay := (screenID == "planner" || screenID == "today") && len(taskStates) > 0
+	needsPomoOverlay := (screenID == "pomodoro") && pomoDirty && scr.Layout.Pomo != nil
+	needsBanner := strings.TrimSpace(bannerMsg) != ""
+
+	if !needsClock && !needsTaskOverlay && !needsPomoOverlay && !needsBanner {
+		data, err := os.ReadFile(basePNGPath)
+		if err != nil {
+			return err
+		}
+		return atomicWriteFile(outPNGPath, data)
+	}
+
+	img, err := loadGrayPNG(basePNGPath)
+	if err != nil {
+		return err
+	}
+
+	if needsClock {
+		clockBox := Rect{X: 290, Y: 12, W: 542, H: 38}
+		if scr.Layout.TopClock != nil && scr.Layout.TopClock.W >= 300 {
+			clockBox = *scr.Layout.TopClock
+		}
+		drawLiveTopClock(img, clockBox, status)
 	}
 
 	if needsTaskOverlay {

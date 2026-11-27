@@ -155,6 +155,10 @@ class EinkRenderer:
                 const layout = {};
                 const topbar = toRect(document.querySelector('.topbar'));
                 if (topbar) layout.topbar = topbar;
+                const topClock = toRect(document.querySelector('.top-clock'));
+                if (topClock) layout.top_clock = topClock;
+                const lsHeaderLeft = toRect(document.querySelector('.ls-header-left'));
+                if (lsHeaderLeft) layout.ls_header_left = lsHeaderLeft;
 
                 const stage = document.querySelector('.pomo-stage');
                 if (stage) {
