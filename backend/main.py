@@ -35,7 +35,15 @@ from backend.modules.registry import (
     dispatch_action,
     resolve_lockscreen_slide,
 )
-from backend.services import calendar_svc, gemini_svc, german_svc, google_cal_svc, pomodoro_svc, weather_svc
+from backend.services import (
+    calendar_svc,
+    gemini_svc,
+    german_svc,
+    google_cal_svc,
+    google_tasks_svc,
+    pomodoro_svc,
+    weather_svc,
+)
 from backend.services.german_data import ROOT_PACKS
 from backend.services.renderer_svc import renderer
 
@@ -109,12 +117,17 @@ class LoginPayload(BaseModel):
 class TaskCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=160)
     priority: int = Field(default=1, ge=1, le=3)
+    due_date: str = Field(default="", max_length=32)
+    notes: str = Field(default="", max_length=500)
+    list_id: str = Field(default="", max_length=160)
 
 
 class TaskUpdate(BaseModel):
     title: str | None = Field(default=None, max_length=160)
     completed: bool | None = None
     priority: int | None = Field(default=None, ge=1, le=3)
+    due_date: str | None = Field(default=None, max_length=32)
+    notes: str | None = Field(default=None, max_length=500)
 
 
 class SettingsUpdate(BaseModel):
@@ -200,6 +213,11 @@ class GoogleCalendarsSelectPayload(BaseModel):
     selected_ids: list[str]
 
 
+class GoogleTaskListsSelectPayload(BaseModel):
+    selected_ids: list[str]
+    default_list_id: str | None = None
+
+
 # ---------- Helpers ----------
 
 
@@ -223,6 +241,22 @@ def _render_html_from_bundle(
 ) -> str:
     is_lockscreen = screen_id.startswith("lockscreen_")
     template = templates.get_template("kindle_shell.html")
+    tasks_meta = bundle.get("tasks_meta") or {"source": "local", "lists": [], "connected": False}
+    task_lists = tasks_meta.get("lists") or []
+    planner_active_idx = -1
+    planner_active_list_id = ""
+    planner_active_list_title = "ALL LISTS"
+    planner_tasks = bundle["tasks"]
+    if screen_id.startswith("planner_list_"):
+        try:
+            idx = int(screen_id.split("_")[-1])
+            if 0 <= idx < len(task_lists):
+                planner_active_idx = idx
+                planner_active_list_id = task_lists[idx]["id"]
+                planner_active_list_title = task_lists[idx]["title"]
+                planner_tasks = [t for t in bundle["tasks"] if t.get("google_list_id") == planner_active_list_id]
+        except ValueError:
+            pass
     ctx: dict[str, Any] = {
         "screen": screen_id,
         "is_lockscreen": is_lockscreen,
@@ -233,6 +267,12 @@ def _render_html_from_bundle(
         "briefing": bundle["briefing"],
         "german": bundle["german"],
         "tasks": bundle["tasks"],
+        "tasks_meta": tasks_meta,
+        "planner_tasks": planner_tasks,
+        "planner_lists": task_lists[:3],
+        "planner_active_idx": planner_active_idx,
+        "planner_active_list_id": planner_active_list_id,
+        "planner_active_list_title": planner_active_list_title,
         "pomo": bundle["pomodoro"],
         "tiles": bundle["tiles"],
         "settings": settings,
@@ -529,6 +569,7 @@ async def api_sync_batch(
     if payload.refresh_feeds:
         calendar_svc.clear_ics_cache()
         google_cal_svc.clear_google_events_cache()
+        google_tasks_svc.clear_google_tasks_cache()
         weather_svc.clear_weather_cache()
 
     return {
@@ -546,19 +587,26 @@ async def api_offline_bundle(
     mock: bool | None = Query(default=None),
     _: None = Depends(require_auth),
 ):
-    """Return a single ZIP containing all 8 rendered Kindle screens, hitboxes, layout rects, and time-sliced lock screens."""
+    """Return a single ZIP containing all rendered Kindle screens, hitboxes, layout rects, and time-sliced lock screens."""
     settings = _effective_settings(mock)
     now = calendar_svc.get_local_now(settings["timezone"], sim_time=sim_time)
 
     if force_refresh:
         calendar_svc.clear_ics_cache()
         google_cal_svc.clear_google_events_cache()
+        google_tasks_svc.clear_google_tasks_cache()
         weather_svc.clear_weather_cache()
 
     base_bundle = await build_data_bundle(settings, now, force_refresh=force_refresh)
 
+    bundle_screens = list(OFFLINE_SCREENS)
+    google_task_lists = (base_bundle.get("tasks_meta") or {}).get("lists") or []
+    if len(google_task_lists) >= 2:
+        for list_idx in range(min(3, len(google_task_lists))):
+            bundle_screens.append(f"planner_list_{list_idx}")
+
     html_items: list[tuple[str, str]] = []
-    for scr in OFFLINE_SCREENS:
+    for scr in bundle_screens:
         html_items.append(
             (
                 f"screen:{scr}",
@@ -792,7 +840,7 @@ async def api_offline_bundle(
     rendered_map = await renderer.render_batch(html_items)
 
     screens_manifest: dict[str, Any] = {}
-    for scr in OFFLINE_SCREENS:
+    for scr in bundle_screens:
         rend = rendered_map[f"screen:{scr}"]
         screens_manifest[scr] = {
             "file": f"screens/{scr}.png",
@@ -894,7 +942,7 @@ async def api_offline_bundle(
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_STORED) as zf:
         zf.writestr("manifest.json", json.dumps(manifest, separators=(",", ":")))
-        for scr in OFFLINE_SCREENS:
+        for scr in bundle_screens:
             zf.writestr(f"screens/{scr}.png", rendered_map[f"screen:{scr}"].png_bytes)
         zf.writestr("lockscreens/default.png", rendered_map["lock:default"].png_bytes)
         for s in slot_defs:
@@ -918,7 +966,7 @@ async def api_offline_bundle(
         headers={
             "Cache-Control": "no-store",
             "Content-Disposition": 'attachment; filename="hermes_offline_bundle.zip"',
-            "X-Hermes-Bundle-Screens": str(len(OFFLINE_SCREENS)),
+            "X-Hermes-Bundle-Screens": str(len(bundle_screens)),
             "X-Hermes-Lockscreen-Slots": str(len(slot_defs)),
         },
     )
@@ -1022,6 +1070,7 @@ async def get_full_state(
         "time_str": bundle["time_str"],
         "settings": bundle["settings"],
         "tasks": bundle["tasks"],
+        "tasks_meta": bundle["tasks_meta"],
         "pomodoro": bundle["pomodoro"],
         "calendar": bundle["calendar"],
         "weather": bundle["weather"],
@@ -1032,47 +1081,97 @@ async def get_full_state(
 
 
 @app.get("/api/tasks")
-async def api_list_tasks(_: None = Depends(require_auth)):
-    return {"tasks": db.list_tasks()}
+async def api_list_tasks(
+    force_refresh: bool = Query(default=False),
+    _: None = Depends(require_auth),
+):
+    settings = db.get_all_settings()
+    now = calendar_svc.get_local_now(settings["timezone"])
+    ctx = await google_tasks_svc.get_tasks_context(settings, now, force_refresh=force_refresh)
+    return {"tasks": ctx["tasks"], "tasks_meta": ctx}
+
+
+@app.post("/api/tasks/sync")
+async def api_sync_tasks(_: None = Depends(require_auth)):
+    settings = db.get_all_settings()
+    now = calendar_svc.get_local_now(settings["timezone"])
+    google_tasks_svc.clear_google_tasks_cache()
+    ctx = await google_tasks_svc.get_tasks_context(settings, now, force_refresh=True)
+    return {"ok": True, "tasks": ctx["tasks"], "tasks_meta": ctx}
 
 
 @app.post("/api/tasks")
 async def api_create_task(payload: TaskCreate, _: None = Depends(require_auth)):
+    settings = db.get_all_settings()
+    now = calendar_svc.get_local_now(settings["timezone"])
     try:
-        task = db.create_task(payload.title, priority=payload.priority)
-        return {"task": task, "tasks": db.list_tasks()}
+        task = await google_tasks_svc.create_task_two_way(
+            payload.title,
+            priority=payload.priority,
+            due_date=payload.due_date,
+            notes=payload.notes,
+            list_id=payload.list_id,
+            settings=settings,
+        )
+        ctx = await google_tasks_svc.get_tasks_context(settings, now, force_refresh=False)
+        return {"task": task, "tasks": ctx["tasks"], "tasks_meta": ctx}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Google Tasks sync error: {exc}")
 
 
 @app.post("/api/tasks/{task_id}/toggle")
 async def api_toggle_task(task_id: int, _: None = Depends(require_auth)):
-    task = db.toggle_task(task_id)
+    settings = db.get_all_settings()
+    now = calendar_svc.get_local_now(settings["timezone"])
+    task = await google_tasks_svc.toggle_task_two_way(task_id, settings=settings)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    return {"task": task, "tasks": db.list_tasks()}
+    ctx = await google_tasks_svc.get_tasks_context(settings, now, force_refresh=False)
+    return {"task": task, "tasks": ctx["tasks"], "tasks_meta": ctx}
 
 
 @app.patch("/api/tasks/{task_id}")
 async def api_update_task(task_id: int, payload: TaskUpdate, _: None = Depends(require_auth)):
-    task = db.update_task(task_id, title=payload.title, completed=payload.completed, priority=payload.priority)
+    settings = db.get_all_settings()
+    now = calendar_svc.get_local_now(settings["timezone"])
+    task = await google_tasks_svc.update_task_two_way(
+        task_id,
+        title=payload.title,
+        completed=payload.completed,
+        priority=payload.priority,
+        due_date=payload.due_date,
+        notes=payload.notes,
+        settings=settings,
+    )
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    return {"task": task, "tasks": db.list_tasks()}
+    ctx = await google_tasks_svc.get_tasks_context(settings, now, force_refresh=False)
+    return {"task": task, "tasks": ctx["tasks"], "tasks_meta": ctx}
 
 
 @app.delete("/api/tasks/{task_id}")
 async def api_delete_task(task_id: int, _: None = Depends(require_auth)):
-    deleted = db.delete_task(task_id)
+    settings = db.get_all_settings()
+    now = calendar_svc.get_local_now(settings["timezone"])
+    deleted = await google_tasks_svc.delete_task_two_way(task_id, settings=settings)
     if not deleted:
         raise HTTPException(status_code=404, detail="Task not found")
-    return {"ok": True, "tasks": db.list_tasks()}
+    ctx = await google_tasks_svc.get_tasks_context(settings, now, force_refresh=False)
+    return {"ok": True, "tasks": ctx["tasks"], "tasks_meta": ctx}
 
 
 @app.post("/api/tasks/clear-completed")
-async def api_clear_completed(_: None = Depends(require_auth)):
-    removed = db.clear_completed_tasks()
-    return {"removed": removed, "tasks": db.list_tasks()}
+async def api_clear_completed(
+    list_id: str = Query(default=""),
+    _: None = Depends(require_auth),
+):
+    settings = db.get_all_settings()
+    now = calendar_svc.get_local_now(settings["timezone"])
+    removed = await google_tasks_svc.clear_completed_two_way(list_id=list_id, settings=settings)
+    ctx = await google_tasks_svc.get_tasks_context(settings, now, force_refresh=False)
+    return {"removed": removed, "tasks": ctx["tasks"], "tasks_meta": ctx}
 
 
 @app.get("/api/pomodoro")
@@ -1414,8 +1513,40 @@ async def api_google_select_calendars(
     return google_cal_svc.get_public_status(_google_callback_url(request))
 
 
+@app.post("/api/google/task-lists/refresh")
+async def api_google_refresh_task_lists(request: Request, _: None = Depends(require_auth)):
+    try:
+        await google_tasks_svc.refresh_task_lists(auto_select_defaults=False)
+        settings = db.get_all_settings()
+        now = calendar_svc.get_local_now(settings["timezone"])
+        await google_tasks_svc.sync_from_google(now, force_refresh=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return google_cal_svc.get_public_status(_google_callback_url(request))
+
+
+@app.patch("/api/google/task-lists")
+async def api_google_select_task_lists(
+    request: Request,
+    payload: GoogleTaskListsSelectPayload,
+    _: None = Depends(require_auth),
+):
+    clean_ids = [lid.strip() for lid in payload.selected_ids if lid.strip()]
+    updates: dict[str, Any] = {"selected_task_list_ids": clean_ids}
+    if payload.default_list_id is not None and payload.default_list_id.strip():
+        updates["default_task_list_id"] = payload.default_list_id.strip()
+    elif clean_ids:
+        oauth = db.get_google_oauth()
+        if oauth.get("default_task_list_id") not in clean_ids:
+            updates["default_task_list_id"] = clean_ids[0]
+    db.update_google_oauth(updates)
+    google_tasks_svc.clear_google_tasks_cache()
+    return google_cal_svc.get_public_status(_google_callback_url(request))
+
+
 @app.post("/api/google/disconnect")
 async def api_google_disconnect(request: Request, _: None = Depends(require_auth)):
     db.clear_google_tokens()
     google_cal_svc.clear_google_events_cache()
+    google_tasks_svc.clear_google_tasks_cache()
     return google_cal_svc.get_public_status(_google_callback_url(request))

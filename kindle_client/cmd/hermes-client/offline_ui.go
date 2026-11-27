@@ -537,7 +537,7 @@ func ApplyOfflineOverlays(
 	status DeviceStatus,
 ) error {
 	needsClock := status.TimeStr != ""
-	needsTaskOverlay := (screenID == "planner" || screenID == "today") && len(taskStates) > 0
+	needsTaskOverlay := (screenID == "planner" || screenID == "today" || strings.HasPrefix(screenID, "planner_list_")) && len(taskStates) > 0
 	needsPomoOverlay := (screenID == "pomodoro") && pomoDirty && scr.Layout.Pomo != nil
 	needsBanner := strings.TrimSpace(bannerMsg) != ""
 
