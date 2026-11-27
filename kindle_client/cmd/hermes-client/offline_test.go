@@ -512,11 +512,12 @@ func TestLiveClockBatteryOverlaysAndMinuteAlignment(t *testing.T) {
 	}
 
 	status := FormatDeviceStatus(tm, 76, true)
+	status.LastWakeStr = "14:40"
 	if status.TimeStr != "14:54" || status.DateStr != "FRI 27 NOV" {
 		t.Fatalf("unexpected formatted status: %+v", status)
 	}
 
-	// Verify lockscreen live clock + battery overlay renders cleanly inside .ls-header-left without touching right column
+	// Verify lockscreen date + LAST WAKE + battery overlay renders cleanly inside .ls-header-left without touching right column
 	lockOut := filepath.Join(dir, "lock_live.png")
 	if err := ApplyLockScreenOverlays(basePath, lockOut, status); err != nil {
 		t.Fatalf("ApplyLockScreenOverlays failed: %v", err)

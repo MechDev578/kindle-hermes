@@ -13,11 +13,12 @@ import (
 
 // DeviceStatus holds live hardware telemetry read directly from the Kindle (100% offline).
 type DeviceStatus struct {
-	Now      time.Time
-	TimeStr  string // "14:54"
-	DateStr  string // "FRI 27 NOV"
-	Battery  int    // 0..100, or -1 if unavailable
-	Charging bool
+	Now         time.Time
+	TimeStr     string // "14:54"
+	DateStr     string // "FRI 27 NOV"
+	LastWakeStr string // "14:50" (populated on launch and outOfScreenSaver)
+	Battery     int    // 0..100, or -1 if unavailable
+	Charging    bool
 }
 
 var (

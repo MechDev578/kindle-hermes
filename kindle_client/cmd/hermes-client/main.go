@@ -173,6 +173,7 @@ func main() {
 		lastPaintedTime = ""
 		lastPaintedBatt = -999
 		lastPaintedChg  = false
+		lastWakeTime    = ""
 		nextAutoSyncAt  time.Time
 	)
 
@@ -184,6 +185,8 @@ func main() {
 		loc := DetectKindleLocation(store.TzOffsetSec(), refreshTZ)
 		return ReadDeviceStatus(loc)
 	}
+
+	lastWakeTime = getDeviceStatus(false).TimeStr
 
 	var paintMu sync.Mutex
 	paintFile := func(pngPath string, fullFlash, invert bool) {
@@ -203,8 +206,11 @@ func main() {
 	lockCtrl := NewLockController(
 		store.PickLockScreenPNG,
 		func(pngPath string, fullFlash bool) {
-			// Stamp exact current Kindle clock + battery % onto lock screen right before painting
+			// Stamp today's date, LAST WAKE HH:MM, and live battery % onto lock screen right before painting
 			status := getDeviceStatus(false)
+			mu.Lock()
+			status.LastWakeStr = lastWakeTime
+			mu.Unlock()
 			if err := ApplyLockScreenOverlays(pngPath, tmpLockPNG, status); err == nil {
 				paintFile(tmpLockPNG, fullFlash, false)
 			} else {
@@ -511,7 +517,7 @@ func main() {
 
 			case strings.Contains(evLine, "outOfScreenSaver"):
 				unlockGen := lockCtrl.OnOutOfScreenSaver()
-				_ = getDeviceStatus(true) // refresh local timezone on wake
+				wakeStatus := getDeviceStatus(true) // refresh local timezone and capture wake timestamp
 				// Re-align minute timer to exact :00 boundary (CLOCK_MONOTONIC pauses during Kindle deep sleep)
 				if !minuteTimer.Stop() {
 					select {
@@ -521,6 +527,7 @@ func main() {
 				}
 				minuteTimer.Reset(NextMinuteDelay(time.Now()))
 				mu.Lock()
+				lastWakeTime = wakeStatus.TimeStr
 				scr := currentScreen
 				mu.Unlock()
 				go func(expectedGen uint64, screenID string) {

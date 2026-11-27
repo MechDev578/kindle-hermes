@@ -444,9 +444,10 @@ func drawLiveTopClock(img *image.Gray, box Rect, status DeviceStatus) {
 	}
 }
 
-// ApplyLockScreenOverlays stamps live Kindle HH:MM time, date, and battery % onto any Smart Lock Screen PNG.
+// ApplyLockScreenOverlays stamps today's date, LAST WAKE HH:MM, and live hardware battery % onto any Smart Lock Screen PNG
+// (so a static deep-sleep lock screen never displays a misleading frozen wall clock).
 func ApplyLockScreenOverlays(basePNGPath, outPNGPath string, status DeviceStatus) error {
-	if status.TimeStr == "" {
+	if status.DateStr == "" && status.TimeStr == "" {
 		data, err := os.ReadFile(basePNGPath)
 		if err != nil {
 			return err
@@ -462,34 +463,61 @@ func ApplyLockScreenOverlays(basePNGPath, outPNGPath string, status DeviceStatus
 	// All 5 lockscreen templates share identical .ls-header-left geometry: x=32..608, y=0..118 (border at y=119..123).
 	fillRect(img, 28, 10, 574, 104, 255)
 
-	// 1. Large crisp live Kindle time (52px smooth Swiss grotesque digits, matches 56px editorial header)
-	timeH := 52
-	timeW := measureCrispClock(status.TimeStr, timeH)
-	timeX := 34
-	timeY := (118 - timeH) / 2
-	drawCrispClock(img, timeX, timeY, timeH, status.TimeStr, 0)
+	leftX := 34
 
-	// 2. Clean hairline divider separating clock from date + battery
-	divX := timeX + timeW + 24
-	fillRect(img, divX, 30, 3, 58, 102)
+	// Line 1: Today's date as bold primary anchor (stays accurate all day during deep sleep)
+	if status.DateStr != "" {
+		drawText5x7At(img, leftX, 22, status.DateStr, 5, 0)
+	}
 
-	// 3. Stacked Date (top) + Battery Gauge & % (bottom)
-	metaX := divX + 22
+	// Line 2: Honest "LAST WAKE HH:MM" metadata + live hardware battery gauge & %
+	wakeStr := status.LastWakeStr
+	if wakeStr == "" {
+		wakeStr = status.TimeStr
+	}
+	subY := 71
+	curX := leftX
+	subScale := 3
+	_, subH := measureText5x7("A", subScale)
+	centerY := subY + subH/2
+
+	if wakeStr != "" {
+		prefix := "LAST WAKE "
+		pw, _ := measureText5x7(prefix, subScale)
+		drawText5x7At(img, curX, subY, prefix, subScale, 68)
+		curX += pw + 3*subScale/3
+		// measureText5x7 trims trailing inter-char space; add explicit space before HH:MM
+		tw, _ := measureText5x7(wakeStr, subScale)
+		drawText5x7At(img, curX, subY, wakeStr, subScale, 0)
+		curX += tw
+	}
+
 	hasBatt := status.Battery >= 0 && status.Battery <= 100
 	if hasBatt {
-		drawText5x7At(img, metaX, 31, status.DateStr, 3, 34)
-		battY := 64
-		drawBatteryIcon(img, metaX, battY, 42, 20, status.Battery, status.Charging)
-		battLabel := fmt.Sprintf("%d%%", status.Battery)
-		if status.Charging {
-			battLabel = fmt.Sprintf("%d%% CHG", status.Battery)
-		} else if status.Battery <= 15 {
-			battLabel = fmt.Sprintf("%d%% LOW", status.Battery)
+		if wakeStr != "" {
+			sepW := 24
+			fillRect(img, curX+sepW/2-2, centerY-2, 4, 4, 102)
+			curX += sepW
 		}
-		drawText5x7At(img, metaX+52, battY, battLabel, 3, 0)
-	} else {
-		_, dh := measureText5x7(status.DateStr, 3)
-		drawText5x7At(img, metaX, (118-dh)/2, status.DateStr, 3, 34)
+		lowBatt := status.Battery <= 15 && !status.Charging
+		if lowBatt {
+			label := fmt.Sprintf("! %d%% LOW", status.Battery)
+			lw, _ := measureText5x7(label, subScale)
+			pillW := lw + 18
+			pillY := centerY - 14
+			fillRect(img, curX, pillY, pillW, 28, 0)
+			drawCenteredText5x7(img, Rect{X: curX, Y: pillY, W: pillW, H: 28}, label, subScale, 255)
+		} else {
+			battIconW := 40
+			battIconH := 20
+			drawBatteryIcon(img, curX, centerY-battIconH/2, battIconW, battIconH, status.Battery, status.Charging)
+			curX += battIconW + 10
+			battLabel := fmt.Sprintf("%d%%", status.Battery)
+			if status.Charging {
+				battLabel = fmt.Sprintf("%d%% CHG", status.Battery)
+			}
+			drawText5x7At(img, curX, subY, battLabel, subScale, 0)
+		}
 	}
 
 	return saveGrayPNG(outPNGPath, img)
