@@ -14,7 +14,15 @@ from typing import Any
 
 from backend.database import db
 from backend.modules.base import HermesModule
-from backend.services import calendar_svc, gemini_svc, german_svc, google_cal_svc, pomodoro_svc, weather_svc
+from backend.services import (
+    calendar_svc,
+    gemini_svc,
+    german_svc,
+    google_cal_svc,
+    google_tasks_svc,
+    pomodoro_svc,
+    weather_svc,
+)
 
 
 def _icon(body: str) -> str:
@@ -192,6 +200,9 @@ VALID_SCREENS = {
     "calendar",
     "calendar_tomorrow",
     "planner",
+    "planner_list_0",
+    "planner_list_1",
+    "planner_list_2",
     "pomodoro",
     "weather",
     "briefing",
@@ -271,7 +282,8 @@ async def build_data_bundle(
     # explicit "briefing:refresh" regenerates it on demand.
     briefing_data = await gemini_svc.get_daily_briefing(settings, now, force_refresh=False)
     german_data = await german_svc.get_german_context(settings, now, force_refresh=False)
-    tasks_data = db.list_tasks()
+    tasks_ctx = await google_tasks_svc.get_tasks_context(settings, now, force_refresh=force_refresh)
+    tasks_data = tasks_ctx["tasks"]
     pomo_data = pomodoro_svc.get_pomodoro_view(consume_alert=consume_pomo_alert)
 
     bundle: dict[str, Any] = {
@@ -285,6 +297,7 @@ async def build_data_bundle(
         "briefing": briefing_data,
         "german": german_data,
         "tasks": tasks_data,
+        "tasks_meta": tasks_ctx,
         "pomodoro": pomo_data,
     }
 
@@ -328,7 +341,7 @@ async def dispatch_action(
     elif act.startswith("task:toggle:"):
         try:
             task_id = int(act.split(":", 2)[2])
-            db.toggle_task(task_id)
+            await google_tasks_svc.toggle_task_two_way(task_id, settings=settings)
             message = f"Toggled task {task_id}"
         except ValueError:
             pass
@@ -338,13 +351,24 @@ async def dispatch_action(
             parts = act.split(":")
             task_id = int(parts[2])
             completed = parts[3].strip() in ("1", "true", "yes")
-            db.update_task(task_id, completed=completed)
+            await google_tasks_svc.set_task_completed_two_way(task_id, completed, settings=settings)
             message = f"Set task {task_id} completed={completed}"
         except (ValueError, IndexError):
             pass
 
     elif act == "task:clear_done":
-        db.clear_completed_tasks()
+        list_id = ""
+        if current_screen.startswith("planner_list_"):
+            try:
+                idx = int(current_screen.split("_")[-1])
+                oauth = db.get_google_oauth()
+                sel = set(oauth.get("selected_task_list_ids") or [])
+                active_lists = [tl for tl in (oauth.get("task_lists") or []) if not sel or tl["id"] in sel]
+                if 0 <= idx < len(active_lists):
+                    list_id = active_lists[idx]["id"]
+            except ValueError:
+                pass
+        await google_tasks_svc.clear_completed_two_way(list_id=list_id, settings=settings)
         message = "Cleared completed tasks"
 
     elif act == "pomo:toggle":
@@ -368,9 +392,11 @@ async def dispatch_action(
         force_refresh = True
         calendar_svc.clear_ics_cache()
         google_cal_svc.clear_google_events_cache()
+        google_tasks_svc.clear_google_tasks_cache()
         weather_svc.clear_weather_cache()
-        # Actively re-fetch fresh calendar & weather right now so both /kindle and native client see live updates immediately
+        # Actively re-fetch fresh calendar, tasks & weather right now so both /kindle and native client see live updates immediately
         await calendar_svc.get_calendar_context(settings, now, force_refresh=True)
+        await google_tasks_svc.get_tasks_context(settings, now, force_refresh=True)
         await weather_svc.get_weather_context(settings, now, force_refresh=True)
         message = "Synced calendar, weather & tasks"
 

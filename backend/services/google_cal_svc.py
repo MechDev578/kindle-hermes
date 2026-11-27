@@ -20,7 +20,10 @@ logger = logging.getLogger(__name__)
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_CAL_BASE = "https://www.googleapis.com/calendar/v3"
-GOOGLE_SCOPES = "https://www.googleapis.com/auth/calendar.readonly"
+GOOGLE_SCOPES = (
+    "https://www.googleapis.com/auth/calendar.readonly "
+    "https://www.googleapis.com/auth/tasks"
+)
 
 # In-memory CSRF state store: state -> (created_ts, redirect_uri)
 _OAUTH_STATES: dict[str, tuple[float, str]] = {}
@@ -47,8 +50,12 @@ def get_public_status(redirect_uri: str) -> dict[str, Any]:
         "client_id_preview": (oauth["client_id"][:14] + "...") if len(oauth["client_id"]) > 18 else oauth["client_id"],
         "connected": oauth["connected"],
         "account_email": oauth["account_email"],
+        "has_tasks_scope": oauth["has_tasks_scope"],
         "calendars": oauth["calendars"],
         "selected_ids": oauth["selected_ids"],
+        "task_lists": oauth["task_lists"],
+        "selected_task_list_ids": oauth["selected_task_list_ids"],
+        "default_task_list_id": oauth["default_task_list_id"],
         "redirect_uri": config.google_redirect_uri or redirect_uri,
     }
 
@@ -102,6 +109,7 @@ async def exchange_code_for_tokens(code: str, state: str) -> dict[str, Any]:
     access_token = tok.get("access_token", "")
     refresh_token = tok.get("refresh_token") or oauth.get("refresh_token", "")
     expires_in = int(tok.get("expires_in", 3500))
+    granted_scopes = (tok.get("scope") or "").strip() or GOOGLE_SCOPES
     if not access_token:
         raise ValueError("Google returned no access token.")
 
@@ -110,14 +118,24 @@ async def exchange_code_for_tokens(code: str, state: str) -> dict[str, Any]:
             "access_token": access_token,
             "refresh_token": refresh_token,
             "expires_at": time.time() + max(60, expires_in - 60),
+            "granted_scopes": granted_scopes,
         }
     )
 
     calendars = await refresh_calendar_list(auto_select_defaults=True)
-    # Switch out of mock data automatically if user just connected Google Calendar
+    # Also initialize Google Task lists if Tasks scope was granted (non-fatal if API not yet enabled in GCP)
+    task_lists: list[dict[str, Any]] = []
+    if "auth/tasks" in granted_scopes:
+        try:
+            from backend.services import google_tasks_svc
+
+            task_lists = await google_tasks_svc.refresh_task_lists(auto_select_defaults=True)
+        except Exception as exc:
+            logger.warning("Google Tasks initial list fetch skipped: %s", exc)
+    # Switch out of mock data automatically if user just connected Google
     db.update_settings({"use_mock_data": False})
     clear_google_events_cache()
-    return {"connected": True, "calendars": calendars}
+    return {"connected": True, "calendars": calendars, "task_lists": task_lists}
 
 
 async def _ensure_valid_access_token() -> str:

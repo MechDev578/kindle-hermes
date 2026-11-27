@@ -177,6 +177,37 @@ class HermesDB:
                 (time.time(),),
             )
 
+            # Safe additive migrations for existing SQLite databases (e.g. Railway persistent volume)
+            task_cols = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+            task_migrations = [
+                ("notes", "TEXT NOT NULL DEFAULT ''"),
+                ("due_date", "TEXT NOT NULL DEFAULT ''"),
+                ("source", "TEXT NOT NULL DEFAULT 'local'"),
+                ("google_task_id", "TEXT NOT NULL DEFAULT ''"),
+                ("google_list_id", "TEXT NOT NULL DEFAULT ''"),
+                ("google_list_title", "TEXT NOT NULL DEFAULT ''"),
+                ("google_parent_id", "TEXT NOT NULL DEFAULT ''"),
+                ("google_position", "TEXT NOT NULL DEFAULT ''"),
+                ("google_updated", "TEXT NOT NULL DEFAULT ''"),
+            ]
+            for col_name, col_def in task_migrations:
+                if col_name not in task_cols:
+                    conn.execute(f"ALTER TABLE tasks ADD COLUMN {col_name} {col_def}")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_source_google ON tasks(source, google_list_id, google_task_id)"
+            )
+
+            oauth_cols = {r["name"] for r in conn.execute("PRAGMA table_info(google_oauth)").fetchall()}
+            oauth_migrations = [
+                ("granted_scopes", "TEXT NOT NULL DEFAULT ''"),
+                ("task_lists_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("selected_task_list_ids_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("default_task_list_id", "TEXT NOT NULL DEFAULT ''"),
+            ]
+            for col_name, col_def in oauth_migrations:
+                if col_name not in oauth_cols:
+                    conn.execute(f"ALTER TABLE google_oauth ADD COLUMN {col_name} {col_def}")
+
             # Seed default settings only if missing
             default_settings = {
                 "use_mock_data": "true" if config.use_mock_data else "false",
@@ -199,6 +230,7 @@ class HermesDB:
                 "german_active_root": "0",
                 "german_drill_flipped": "0",
                 "german_drill_choice": "",
+                "planner_active_list": "",
             }
             for k, v in default_settings.items():
                 conn.execute(
@@ -273,6 +305,7 @@ class HermesDB:
             "german_active_root": int(raw.get("german_active_root", "0")),
             "german_drill_flipped": raw.get("german_drill_flipped", "0") == "1",
             "german_drill_choice": raw.get("german_drill_choice", ""),
+            "planner_active_list": raw.get("planner_active_list", ""),
         }
 
     def update_settings(self, updates: dict[str, Any]) -> dict[str, Any]:
@@ -297,6 +330,7 @@ class HermesDB:
             "german_active_root",
             "german_drill_flipped",
             "german_drill_choice",
+            "planner_active_list",
         }
         with self._conn() as conn:
             for key, val in updates.items():
@@ -338,42 +372,10 @@ class HermesDB:
             pass
         return list(fallback)
 
-    # ---------- Tasks ----------
+    # ---------- Tasks (Local + 2-Way Google Tasks Mirror) ----------
 
-    def list_tasks(self) -> list[dict[str, Any]]:
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT id, title, completed, priority, position, created_at "
-                "FROM tasks ORDER BY completed ASC, priority ASC, position ASC, id ASC"
-            ).fetchall()
-        return [
-            {
-                "id": r["id"],
-                "title": r["title"],
-                "completed": bool(r["completed"]),
-                "priority": r["priority"],
-                "position": r["position"],
-                "created_at": r["created_at"],
-            }
-            for r in rows
-        ]
-
-    def create_task(self, title: str, priority: int = 1) -> dict[str, Any]:
-        clean = title.strip()
-        if not clean:
-            raise ValueError("Task title cannot be empty")
-        now_iso = datetime.now(timezone.utc).isoformat()
-        with self._conn() as conn:
-            row = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 AS pos FROM tasks").fetchone()
-            cur = conn.execute(
-                "INSERT INTO tasks (title, completed, priority, position, created_at) VALUES (?, 0, ?, ?, ?)",
-                (clean, int(priority), int(row["pos"]), now_iso),
-            )
-            task_id = cur.lastrowid
-            r = conn.execute(
-                "SELECT id, title, completed, priority, position, created_at FROM tasks WHERE id = ?",
-                (task_id,),
-            ).fetchone()
+    @staticmethod
+    def _row_to_task(r: sqlite3.Row) -> dict[str, Any]:
         return {
             "id": r["id"],
             "title": r["title"],
@@ -381,7 +383,93 @@ class HermesDB:
             "priority": r["priority"],
             "position": r["position"],
             "created_at": r["created_at"],
+            "notes": r["notes"] or "",
+            "due_date": r["due_date"] or "",
+            "source": r["source"] or "local",
+            "google_task_id": r["google_task_id"] or "",
+            "google_list_id": r["google_list_id"] or "",
+            "google_list_title": r["google_list_title"] or "",
+            "google_parent_id": r["google_parent_id"] or "",
+            "google_position": r["google_position"] or "",
+            "google_updated": r["google_updated"] or "",
         }
+
+    def list_tasks(
+        self,
+        source: str | None = "local",
+        google_list_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if source is not None:
+            clauses.append("source = ?")
+            params.append(source)
+        if google_list_id:
+            clauses.append("google_list_id = ?")
+            params.append(google_list_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._conn() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM tasks {where} ORDER BY completed ASC, priority ASC, position ASC, id ASC",
+                params,
+            ).fetchall()
+        return [self._row_to_task(r) for r in rows]
+
+    def get_task(self, task_id: int) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            r = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        return self._row_to_task(r) if r else None
+
+    def create_task(
+        self,
+        title: str,
+        priority: int = 1,
+        *,
+        notes: str = "",
+        due_date: str = "",
+        source: str = "local",
+        google_task_id: str = "",
+        google_list_id: str = "",
+        google_list_title: str = "",
+        google_parent_id: str = "",
+        google_position: str = "",
+        google_updated: str = "",
+        completed: bool = False,
+    ) -> dict[str, Any]:
+        clean = title.strip()
+        if not clean:
+            raise ValueError("Task title cannot be empty")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            row = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 AS pos FROM tasks").fetchone()
+            cur = conn.execute(
+                """
+                INSERT INTO tasks (
+                    title, completed, priority, position, created_at,
+                    notes, due_date, source, google_task_id, google_list_id,
+                    google_list_title, google_parent_id, google_position, google_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    clean,
+                    1 if completed else 0,
+                    int(priority),
+                    int(row["pos"]),
+                    now_iso,
+                    notes.strip(),
+                    due_date.strip(),
+                    source,
+                    google_task_id.strip(),
+                    google_list_id.strip(),
+                    google_list_title.strip(),
+                    google_parent_id.strip(),
+                    google_position.strip(),
+                    google_updated.strip(),
+                ),
+            )
+            task_id = cur.lastrowid
+            r = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        return self._row_to_task(r)
 
     def toggle_task(self, task_id: int) -> dict[str, Any] | None:
         with self._conn() as conn:
@@ -390,21 +478,18 @@ class HermesDB:
                 return None
             new_val = 0 if r["completed"] else 1
             conn.execute("UPDATE tasks SET completed = ? WHERE id = ?", (new_val, task_id))
-            updated = conn.execute(
-                "SELECT id, title, completed, priority, position, created_at FROM tasks WHERE id = ?",
-                (task_id,),
-            ).fetchone()
-        return {
-            "id": updated["id"],
-            "title": updated["title"],
-            "completed": bool(updated["completed"]),
-            "priority": updated["priority"],
-            "position": updated["position"],
-            "created_at": updated["created_at"],
-        }
+            updated = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        return self._row_to_task(updated)
 
     def update_task(
-        self, task_id: int, title: str | None = None, completed: bool | None = None, priority: int | None = None
+        self,
+        task_id: int,
+        title: str | None = None,
+        completed: bool | None = None,
+        priority: int | None = None,
+        notes: str | None = None,
+        due_date: str | None = None,
+        google_updated: str | None = None,
     ) -> dict[str, Any] | None:
         with self._conn() as conn:
             r = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
@@ -413,32 +498,124 @@ class HermesDB:
             new_title = title.strip() if title is not None and title.strip() else r["title"]
             new_completed = (1 if completed else 0) if completed is not None else r["completed"]
             new_priority = int(priority) if priority is not None else r["priority"]
+            new_notes = notes.strip() if notes is not None else r["notes"]
+            new_due = due_date.strip() if due_date is not None else r["due_date"]
+            new_gupd = google_updated.strip() if google_updated is not None else r["google_updated"]
             conn.execute(
-                "UPDATE tasks SET title = ?, completed = ?, priority = ? WHERE id = ?",
-                (new_title, new_completed, new_priority, task_id),
+                """
+                UPDATE tasks
+                SET title = ?, completed = ?, priority = ?, notes = ?, due_date = ?, google_updated = ?
+                WHERE id = ?
+                """,
+                (new_title, new_completed, new_priority, new_notes, new_due, new_gupd, task_id),
             )
-            updated = conn.execute(
-                "SELECT id, title, completed, priority, position, created_at FROM tasks WHERE id = ?",
-                (task_id,),
-            ).fetchone()
-        return {
-            "id": updated["id"],
-            "title": updated["title"],
-            "completed": bool(updated["completed"]),
-            "priority": updated["priority"],
-            "position": updated["position"],
-            "created_at": updated["created_at"],
-        }
+            updated = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        return self._row_to_task(updated)
 
     def delete_task(self, task_id: int) -> bool:
         with self._conn() as conn:
             cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
             return cur.rowcount > 0
 
-    def clear_completed_tasks(self) -> int:
+    def clear_completed_tasks(self, source: str = "local", google_list_id: str | None = None) -> int:
         with self._conn() as conn:
-            cur = conn.execute("DELETE FROM tasks WHERE completed = 1")
+            if google_list_id:
+                cur = conn.execute(
+                    "DELETE FROM tasks WHERE completed = 1 AND source = ? AND google_list_id = ?",
+                    (source, google_list_id),
+                )
+            else:
+                cur = conn.execute(
+                    "DELETE FROM tasks WHERE completed = 1 AND source = ?",
+                    (source,),
+                )
             return cur.rowcount
+
+    def upsert_google_tasks(
+        self,
+        remote_tasks: list[dict[str, Any]],
+        active_list_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        """Mirror Google Tasks into SQLite while preserving stable integer IDs for offline Kindle outbox replay."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            existing_rows = conn.execute(
+                "SELECT id, google_list_id, google_task_id FROM tasks WHERE source = 'google'"
+            ).fetchall()
+            existing_map: dict[tuple[str, str], int] = {
+                (r["google_list_id"], r["google_task_id"]): int(r["id"]) for r in existing_rows
+            }
+
+            seen_keys: set[tuple[str, str]] = set()
+            for idx, item in enumerate(remote_tasks):
+                g_list_id = str(item.get("google_list_id") or "").strip()
+                g_task_id = str(item.get("google_task_id") or "").strip()
+                title = str(item.get("title") or "").strip()
+                if not g_list_id or not g_task_id or not title:
+                    continue
+                key = (g_list_id, g_task_id)
+                seen_keys.add(key)
+                completed_int = 1 if item.get("completed") else 0
+                notes = str(item.get("notes") or "").strip()
+                due_date = str(item.get("due_date") or "").strip()
+                list_title = str(item.get("google_list_title") or "").strip()
+                parent_id = str(item.get("google_parent_id") or "").strip()
+                g_pos = str(item.get("google_position") or "").strip()
+                g_upd = str(item.get("google_updated") or "").strip()
+
+                if key in existing_map:
+                    conn.execute(
+                        """
+                        UPDATE tasks
+                        SET title = ?, completed = ?, position = ?, notes = ?, due_date = ?,
+                            google_list_title = ?, google_parent_id = ?, google_position = ?, google_updated = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            title,
+                            completed_int,
+                            idx,
+                            notes,
+                            due_date,
+                            list_title,
+                            parent_id,
+                            g_pos,
+                            g_upd,
+                            existing_map[key],
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO tasks (
+                            title, completed, priority, position, created_at,
+                            notes, due_date, source, google_task_id, google_list_id,
+                            google_list_title, google_parent_id, google_position, google_updated
+                        ) VALUES (?, ?, 1, ?, ?, ?, ?, 'google', ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            title,
+                            completed_int,
+                            idx,
+                            now_iso,
+                            notes,
+                            due_date,
+                            g_task_id,
+                            g_list_id,
+                            list_title,
+                            parent_id,
+                            g_pos,
+                            g_upd,
+                        ),
+                    )
+
+            # Prune remote tasks removed in Google or belonging to deselected lists
+            active_set = set(active_list_ids)
+            for key, row_id in existing_map.items():
+                if key not in seen_keys or (active_set and key[0] not in active_set):
+                    conn.execute("DELETE FROM tasks WHERE id = ?", (row_id,))
+
+        return self.list_tasks(source="google")
 
     # ---------- Pomodoro ----------
 
@@ -498,7 +675,7 @@ class HermesDB:
                 (date_key, json.dumps(payload), source, now_iso),
             )
 
-    # ---------- Google Calendar OAuth ----------
+    # ---------- Google OAuth (Calendar + Tasks Shared Connection) ----------
 
     def get_google_oauth(self) -> dict[str, Any]:
         with self._conn() as conn:
@@ -514,6 +691,16 @@ class HermesDB:
             selected_ids = json.loads(data.get("selected_ids_json") or "[]")
         except Exception:
             selected_ids = []
+        try:
+            task_lists = json.loads(data.get("task_lists_json") or "[]")
+        except Exception:
+            task_lists = []
+        try:
+            selected_task_list_ids = json.loads(data.get("selected_task_list_ids_json") or "[]")
+        except Exception:
+            selected_task_list_ids = []
+        granted_scopes = (data.get("granted_scopes") or "").strip()
+        has_tasks_scope = "auth/tasks" in granted_scopes
         return {
             "client_id": client_id,
             "client_secret": client_secret,
@@ -523,8 +710,13 @@ class HermesDB:
             "expires_at": float(data.get("expires_at") or 0),
             "account_email": data.get("account_email", ""),
             "connected": bool(data.get("refresh_token") or data.get("access_token")),
+            "granted_scopes": granted_scopes,
+            "has_tasks_scope": has_tasks_scope,
             "calendars": calendars if isinstance(calendars, list) else [],
             "selected_ids": selected_ids if isinstance(selected_ids, list) else [],
+            "task_lists": task_lists if isinstance(task_lists, list) else [],
+            "selected_task_list_ids": selected_task_list_ids if isinstance(selected_task_list_ids, list) else [],
+            "default_task_list_id": (data.get("default_task_list_id") or "").strip(),
             "updated_at": float(data.get("updated_at") or 0),
         }
 
@@ -536,12 +728,18 @@ class HermesDB:
             "refresh_token",
             "expires_at",
             "account_email",
+            "granted_scopes",
             "calendars",
             "selected_ids",
+            "task_lists",
+            "selected_task_list_ids",
+            "default_task_list_id",
         }
         col_map = {
             "calendars": "calendars_json",
             "selected_ids": "selected_ids_json",
+            "task_lists": "task_lists_json",
+            "selected_task_list_ids": "selected_task_list_ids_json",
         }
         sets: list[str] = ["updated_at = ?"]
         vals: list[Any] = [time.time()]
@@ -549,7 +747,7 @@ class HermesDB:
             if k not in allowed or v is None:
                 continue
             col = col_map.get(k, k)
-            if k in ("calendars", "selected_ids"):
+            if k in ("calendars", "selected_ids", "task_lists", "selected_task_list_ids"):
                 v = json.dumps(v)
             sets.append(f"{col} = ?")
             vals.append(v)
@@ -564,12 +762,15 @@ class HermesDB:
                 """
                 UPDATE google_oauth
                 SET access_token = '', refresh_token = '', expires_at = 0,
-                    account_email = '', calendars_json = '[]', selected_ids_json = '[]',
-                    updated_at = ?
+                    account_email = '', granted_scopes = '',
+                    calendars_json = '[]', selected_ids_json = '[]',
+                    task_lists_json = '[]', selected_task_list_ids_json = '[]',
+                    default_task_list_id = '', updated_at = ?
                 WHERE id = 1
                 """,
                 (time.time(),),
             )
+            conn.execute("DELETE FROM tasks WHERE source = 'google'")
         return self.get_google_oauth()
 
     # ---------- Hermes Deutsch (A2 -> C2 FSRS, Classics, Daily Reader & Output) ----------
