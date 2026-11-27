@@ -1,8 +1,8 @@
-# KindleHermes OS (v3 — Offline-First E-Ink OS & Hermes Deutsch)
+# KindleHermes OS (v3.1 — Offline-First E-Ink OS & Hermes Deutsch)
 
 An **offline-first**, modular e-ink OS, **Hermes Deutsch (`A2 → C2`)** language studio, time-sliced Smart Lock Screen engine, and cross-device web companion built for the **Kindle Paperwhite 10th Gen (PW4 — `1072 × 1448` @ 300 PPI)** — keeping your Kindle 100% stock for normal reading and using **Wi-Fi only for updates and sync**.
 
-> **`main` tracks the latest release (`v3`).** Archived milestones are preserved on branches [`v1`](../../tree/v1) (original online thin client + design notes on why we pivoted), [`v2`](../../tree/v2), [`v2.1`](../../tree/v2.1), and [`v3`](../../tree/v3).
+> **`main` tracks the latest release (`v3.1`).** Archived milestones are preserved on branches [`v1`](../../tree/v1) (original online thin client + design notes on why we pivoted), [`v2`](../../tree/v2), [`v2.1`](../../tree/v2.1), [`v3`](../../tree/v3), and [`v3.1`](../../tree/v3.1).
 
 ---
 
@@ -91,4 +91,5 @@ See [kindle_scripts/README_KINDLE.md](kindle_scripts/README_KINDLE.md) for the f
 * **[`v1`](../../tree/v1):** Initial online thin client, server-driven screen/hitbox protocol, companion PWA, PW4 simulator, and post-mortem notes on why we pivoted away from an always-online model.
 * **[`v2`](../../tree/v2):** Offline-first pivot — single-shot `/api/offline-bundle` ZIP, local cache, offline task outbox (`/api/sync/batch`), local Pomodoro countdown, time-sliced offline Smart Lock Screens, dual Cloud → local failover, and `usb_sync.sh`.
 * **[`v2.1`](../../tree/v2.1):** Security hardening (login rate limiting, HTTPS `Secure` cookies, security headers), Airplane-Mode-respecting launcher, container UTC timezone fix, and full privacy scrub for public open-source release.
-* **[`v3`](../../tree/v3) / `main` (Latest):** **Hermes Deutsch (`A2 → C2`)** full e-ink & companion language studio (FSRS-4.5 Blitz, 15 Famous Texts in 3 modes, live `Tageslektüre` + quiz, 6 Verb-Prefix Root Packs, `Sprachindex`, `de-DE` Audio Shadowing & `Schreib-Sprint`, Deutsch lock screen), parallel 4-page Playwright bundle renderer, persistent offline FSRS/bookmark outbox replay across restarts, and online pack pagination.
+* **[`v3`](../../tree/v3):** **Hermes Deutsch (`A2 → C2`)** full e-ink & companion language studio (FSRS-4.5 Blitz, 15 Famous Texts in 3 modes, live `Tageslektüre` + quiz, 6 Verb-Prefix Root Packs, `Sprachindex`, `de-DE` Audio Shadowing & `Schreib-Sprint`, Deutsch lock screen), parallel 4-page Playwright bundle renderer, persistent offline FSRS/bookmark outbox replay across restarts, and online pack pagination.
+* **[`v3.1`](../../tree/v3.1) / `main` (Latest — Bug Fixes):** Fixed PW4 lock-screen race & suspend-refresh loop in the native Go client (`lockscreen.go`): waits for Amazon's stock `blanket` wallpaper draw to settle via `/dev/fb0` quiescence before painting once cleanly, watches `/dev/fb0` for 8s to catch any late second-pass stock overwrite, cancels pending lock paints immediately on fast unlock, and turns `readyToSuspend` into a strict no-op when the lock screen is intact so `powerd` enters deep sleep immediately with zero repeated flashes.
