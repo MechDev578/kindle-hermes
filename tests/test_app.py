@@ -17,6 +17,7 @@ import backend.services.calendar_svc as cal_module
 import backend.services.gemini_svc as gemini_module
 import backend.services.german_svc as german_module
 import backend.services.google_cal_svc as gcal_module
+import backend.services.google_tasks_svc as gtasks_module
 import backend.services.pomodoro_svc as pomo_module
 import backend.main as main_module
 
@@ -31,9 +32,11 @@ def client(tmp_path: Path):
     gemini_module.db = test_db
     german_module.db = test_db
     gcal_module.db = test_db
+    gtasks_module.db = test_db
     pomo_module.db = test_db
     main_module.db = test_db
     gcal_module.clear_google_events_cache()
+    gtasks_module.clear_google_tasks_cache()
 
     with TestClient(main_module.app) as c:
         yield c
@@ -206,11 +209,12 @@ def test_google_calendar_oauth_setup_and_event_parsing(client: TestClient):
     assert saved.status_code == 200
     assert saved.json()["has_credentials"] is True
 
-    # Auth redirect builds valid Google OAuth URL
+    # Auth redirect builds valid Google OAuth URL (includes both Calendar and Tasks scopes)
     auth_resp = client.get("/api/google/auth", follow_redirects=False)
     assert auth_resp.status_code == 307
     assert "accounts.google.com/o/oauth2/v2/auth" in auth_resp.headers["location"]
     assert "calendar.readonly" in auth_resp.headers["location"]
+    assert "auth%2Ftasks" in auth_resp.headers["location"]
 
     # Calendar selection persistence
     sel = client.patch("/api/google/calendars", json={"selected_ids": ["primary", "work@group.calendar.google.com"]})
@@ -480,3 +484,300 @@ def test_hermes_deutsch_end_to_end(client: TestClient):
     assert st1["mastery"]["streak_days"] >= 1
     assert st1["classic_idx"] == 4
     assert st1["root_idx"] == 2
+
+
+def test_google_tasks_two_way_sync_ui_and_offline_bundle(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    import json
+    import zipfile
+
+    # Seed a local task first — should stay tucked away while Google Tasks is connected, then return on disconnect
+    local_res = client.post("/api/tasks", json={"title": "Local Fallback Task", "priority": 2})
+    assert local_res.status_code == 200
+    assert local_res.json()["tasks_meta"]["source"] == "local"
+
+    # Switch to live mode & configure connected Google OAuth with Calendar + Tasks scopes
+    db_module.db.update_settings({"use_mock_data": False})
+    db_module.db.update_google_oauth(
+        {
+            "client_id": "test-client-id",
+            "client_secret": "test-client-secret",
+            "access_token": "test-access-token",
+            "refresh_token": "test-refresh-token",
+            "expires_at": 9999999999,
+            "granted_scopes": (
+                "https://www.googleapis.com/auth/calendar.readonly "
+                "https://www.googleapis.com/auth/tasks"
+            ),
+            "task_lists": [
+                {"id": "list_work", "title": "Work", "is_default": True},
+                {"id": "list_personal", "title": "Personal", "is_default": False},
+            ],
+            "selected_task_list_ids": ["list_work", "list_personal"],
+            "default_task_list_id": "list_work",
+        }
+    )
+
+    # Stub Google Tasks HTTP traffic (GET lists/tasks, POST create, PATCH update, DELETE, POST clear)
+    today_iso = gcal_module.calendar_svc if hasattr(gcal_module, "calendar_svc") else None
+    del today_iso
+    now_dt = cal_module.get_local_now("Europe/Berlin")
+    today_str = now_dt.date().isoformat()
+    yesterday_str = (now_dt.date().fromordinal(now_dt.date().toordinal() - 1)).isoformat()
+    tomorrow_str = (now_dt.date().fromordinal(now_dt.date().toordinal() + 1)).isoformat()
+
+    remote_store: dict[str, list[dict]] = {
+        "list_work": [
+            {
+                "id": "gt_1",
+                "title": "Ship v3.3 Google Tasks",
+                "notes": "Verify 2-way sync and e-ink badges",
+                "due": f"{today_str}T00:00:00.000Z",
+                "status": "needsAction",
+                "position": "00000000000000000001",
+                "updated": "2026-11-27T10:00:00.000Z",
+            },
+            {
+                "id": "gt_1a",
+                "parent": "gt_1",
+                "title": "Test offline checkbox replay",
+                "status": "needsAction",
+                "position": "00000000000000000002",
+                "updated": "2026-11-27T10:01:00.000Z",
+            },
+            {
+                "id": "gt_2",
+                "title": "Fix overdue ticket",
+                "due": f"{yesterday_str}T00:00:00.000Z",
+                "status": "needsAction",
+                "position": "00000000000000000003",
+                "updated": "2026-11-27T09:00:00.000Z",
+            },
+        ],
+        "list_personal": [
+            {
+                "id": "gt_3",
+                "title": "Buy coffee beans",
+                "due": f"{tomorrow_str}T00:00:00.000Z",
+                "status": "needsAction",
+                "position": "00000000000000000001",
+                "updated": "2026-11-27T08:00:00.000Z",
+            },
+        ],
+    }
+    remote_calls: list[tuple[str, str, dict | None]] = []
+
+    class FakeResponse:
+        def __init__(self, status_code: int, payload: dict | None = None):
+            self.status_code = status_code
+            self._payload = payload or {}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+        def json(self):
+            return self._payload
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url: str, headers=None, params=None):
+            remote_calls.append(("GET", url, params))
+            if url.endswith("/users/@me/lists"):
+                return FakeResponse(
+                    200,
+                    {
+                        "items": [
+                            {"id": "list_work", "title": "Work"},
+                            {"id": "list_personal", "title": "Personal"},
+                        ]
+                    },
+                )
+            for lid, items in remote_store.items():
+                if f"/lists/{lid}/tasks" in url:
+                    return FakeResponse(200, {"items": list(items)})
+            return FakeResponse(404, {})
+
+        async def post(self, url: str, headers=None, json=None):
+            remote_calls.append(("POST", url, json))
+            if url.endswith("/clear"):
+                for lid in remote_store:
+                    if f"/lists/{lid}/clear" in url:
+                        remote_store[lid] = [i for i in remote_store[lid] if i.get("status") != "completed"]
+                return FakeResponse(204, {})
+            for lid, items in remote_store.items():
+                if url.endswith(f"/lists/{lid}/tasks"):
+                    new_item = {
+                        "id": f"gt_new_{len(items) + 1}",
+                        "title": json["title"],
+                        "notes": json.get("notes", ""),
+                        "due": json.get("due"),
+                        "status": "needsAction",
+                        "position": "00000000000000000099",
+                        "updated": "2026-11-27T12:00:00.000Z",
+                    }
+                    items.append(new_item)
+                    return FakeResponse(200, new_item)
+            return FakeResponse(404, {})
+
+        async def patch(self, url: str, headers=None, json=None):
+            remote_calls.append(("PATCH", url, json))
+            for lid, items in remote_store.items():
+                for item in items:
+                    if url.endswith(f"/lists/{lid}/tasks/{item['id']}"):
+                        item.update({k: v for k, v in (json or {}).items() if v is not None})
+                        item["updated"] = "2026-11-27T12:05:00.000Z"
+                        return FakeResponse(200, item)
+            return FakeResponse(404, {})
+
+        async def delete(self, url: str, headers=None):
+            remote_calls.append(("DELETE", url, None))
+            for lid, items in remote_store.items():
+                for idx, item in enumerate(items):
+                    if url.endswith(f"/lists/{lid}/tasks/{item['id']}"):
+                        items.pop(idx)
+                        return FakeResponse(204, {})
+            return FakeResponse(404, {})
+
+    monkeypatch.setattr(gtasks_module.httpx, "AsyncClient", FakeAsyncClient)
+    # Avoid live external calls for calendar/weather/briefing during bundle test
+    orig_get_cal = cal_module.get_calendar_context
+    monkeypatch.setattr(
+        cal_module,
+        "get_calendar_context",
+        lambda settings, now, force_refresh=False: orig_get_cal(
+            {**settings, "use_mock_data": True}, now, force_refresh=False
+        ),
+    )
+    orig_get_weather = reg_module.weather_svc.get_weather_context
+    monkeypatch.setattr(
+        reg_module.weather_svc,
+        "get_weather_context",
+        lambda settings, now, force_refresh=False: orig_get_weather(
+            {**settings, "use_mock_data": True}, now, force_refresh=False
+        ),
+    )
+    orig_get_briefing = gemini_module.get_daily_briefing
+    monkeypatch.setattr(
+        gemini_module,
+        "get_daily_briefing",
+        lambda settings, now, force_refresh=False: orig_get_briefing(
+            {**settings, "use_mock_data": True}, now, force_refresh=False
+        ),
+    )
+    orig_get_german = german_module.get_german_context
+    monkeypatch.setattr(
+        german_module,
+        "get_german_context",
+        lambda settings, now, force_refresh=False: orig_get_german(
+            {**settings, "use_mock_data": True}, now, force_refresh=False
+        ),
+    )
+
+    # 1. Sync from Google replaces local tasks cleanly, computes due badges, and nests subtask under parent
+    sync_res = client.post("/api/tasks/sync")
+    assert sync_res.status_code == 200
+    body = sync_res.json()
+    assert body["tasks_meta"]["source"] == "google"
+    assert len(body["tasks_meta"]["lists"]) == 2
+    titles = [t["title"] for t in body["tasks"]]
+    assert "Local Fallback Task" not in titles
+    # Ordering: OVERDUE first, then TODAY parent + its nested subtask right after, then TMRW
+    assert titles[0] == "Fix overdue ticket"
+    assert body["tasks"][0]["due_badge"] == "OVERDUE"
+    assert body["tasks"][0]["due_urgent"] is True
+    assert titles[1] == "Ship v3.3 Google Tasks"
+    assert body["tasks"][1]["due_badge"] == "TODAY"
+    assert titles[2] == "Test offline checkbox replay"
+    assert body["tasks"][2]["is_subtask"] is True
+    assert titles[3] == "Buy coffee beans"
+    assert body["tasks"][3]["due_badge"] == "TMRW"
+
+    parent_id = body["tasks"][1]["id"]
+
+    # 2. Stable integer IDs preserved across re-sync (critical for Kindle offline outbox replay!)
+    resync = client.post("/api/tasks/sync").json()
+    parent_after = next(t for t in resync["tasks"] if t["google_task_id"] == "gt_1")
+    assert parent_after["id"] == parent_id
+
+    # 3. 2-way Create pushes to Google Tasks
+    created = client.post(
+        "/api/tasks",
+        json={
+            "title": "Pack Kindle charger",
+            "list_id": "list_personal",
+            "due_date": tomorrow_str,
+            "notes": "USB-C cable",
+        },
+    )
+    assert created.status_code == 200
+    new_task = created.json()["task"]
+    assert new_task["source"] == "google"
+    assert new_task["google_list_id"] == "list_personal"
+    assert any(m == "POST" and "/lists/list_personal/tasks" in u for m, u, _ in remote_calls)
+
+    # 4. Offline Kindle outbox replay (`task:set:<id>:1`) patches Google Tasks remotely
+    batch = client.post(
+        "/api/sync/batch",
+        json={"actions": [{"action": f"task:set:{parent_id}:1", "current_screen": "planner"}], "refresh_feeds": False},
+    )
+    assert batch.status_code == 200
+    assert any(
+        m == "PATCH" and "/lists/list_work/tasks/gt_1" in u and p and p.get("status") == "completed"
+        for m, u, p in remote_calls
+    )
+
+    # 5. Kindle Planner & per-list filter screen render tabs, due badges, subtask arrow & notes
+    planner_html = client.get("/kindle?screen=planner").text
+    assert "GOOGLE TASKS" in planner_html
+    assert "SYNC GOOGLE TASKS" in planner_html
+    assert 'data-action="nav:planner_list_0"' in planner_html
+    assert 'data-action="nav:planner_list_1"' in planner_html
+    assert "OVERDUE" in planner_html
+    assert "Verify 2-way sync and e-ink badges" in planner_html
+
+    list1_html = client.get("/kindle?screen=planner_list_1").text
+    assert "Buy coffee beans" in list1_html
+    assert "Fix overdue ticket" not in list1_html
+
+    # 6. Offline ZIP bundle dynamically includes planner_list_0 & planner_list_1 when >=2 lists exist
+    bundle_resp = client.get("/api/offline-bundle?force_refresh=0&include_slots=0")
+    assert bundle_resp.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(bundle_resp.content)) as zf:
+        names = set(zf.namelist())
+        assert "screens/planner_list_0.png" in names
+        assert "screens/planner_list_1.png" in names
+        manifest = json.loads(zf.read("manifest.json"))
+        assert "planner_list_0" in manifest["screens"]
+        assert "planner_list_1" in manifest["screens"]
+
+    # 7. Delete & clear-completed push to Google Tasks
+    del_res = client.delete(f"/api/tasks/{new_task['id']}")
+    assert del_res.status_code == 200
+    assert any(m == "DELETE" and "/lists/list_personal/tasks/" in u for m, u, _ in remote_calls)
+
+    clear_res = client.post("/api/tasks/clear-completed?list_id=list_work")
+    assert clear_res.status_code == 200
+    assert any(m == "POST" and "/lists/list_work/clear" in u for m, u, _ in remote_calls)
+
+    # 8. Disconnect Google -> local fallback task seamlessly returns
+    disc = client.post("/api/google/disconnect")
+    assert disc.status_code == 200
+    after_disc = client.get("/api/tasks").json()
+    assert after_disc["tasks_meta"]["source"] == "local"
+    assert any(t["title"] == "Local Fallback Task" for t in after_disc["tasks"])
+
+
+async def _async_val(val):
+    return val
+
+
+
+

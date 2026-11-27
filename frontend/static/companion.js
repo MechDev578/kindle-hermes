@@ -1,6 +1,7 @@
 /* KindleHermes Cross-Device Companion PWA (iOS / macOS / Windows) */
 (function () {
   let appState = null;
+  let activeTaskListFilter = '';
 
   const $ = (id) => document.getElementById(id);
 
@@ -41,36 +42,192 @@
     }
   }
 
-  function renderTasks(tasks) {
+  function renderTasks(tasks, tasksMeta) {
     const list = $('task-list');
     if (!list) return;
-    if (!tasks.length) {
-      list.innerHTML = '<div style="color:#5c5b57;font-size:14px;padding:8px 0;">No priorities yet. Add one above to sync to your Kindle.</div>';
+    const meta = tasksMeta || (appState && appState.tasks_meta) || { source: 'local', lists: [], needs_reconnect: false };
+    const isGoogle = meta.source === 'google';
+    const googleLists = meta.lists || [];
+
+    const sourceBadge = $('tasks-source-badge');
+    if (sourceBadge) {
+      sourceBadge.textContent = isGoogle ? 'GOOGLE TASKS · 2-WAY' : 'LOCAL';
+      sourceBadge.style.background = isGoogle ? '#111' : '';
+      sourceBadge.style.color = isGoogle ? '#fff' : '';
+    }
+    const syncBtn = $('sync-tasks-btn');
+    if (syncBtn) syncBtn.style.display = isGoogle ? 'inline-block' : 'none';
+
+    const reconnectBanner = $('tasks-reconnect-banner');
+    if (reconnectBanner) {
+      reconnectBanner.style.display = meta.needs_reconnect ? 'block' : 'none';
+    }
+
+    // List dropdown for adding new tasks in Google Tasks mode
+    const listSelect = $('new-task-list');
+    const prioSelect = $('new-task-priority');
+    if (listSelect) {
+      if (isGoogle && googleLists.length) {
+        const prevVal = listSelect.value;
+        listSelect.innerHTML = '';
+        googleLists.forEach((tl) => {
+          const opt = document.createElement('option');
+          opt.value = tl.id;
+          opt.textContent = tl.title;
+          listSelect.appendChild(opt);
+        });
+        const preferred =
+          (activeTaskListFilter && googleLists.some((tl) => tl.id === activeTaskListFilter) && activeTaskListFilter) ||
+          (prevVal && googleLists.some((tl) => tl.id === prevVal) && prevVal) ||
+          meta.default_list_id ||
+          googleLists[0].id;
+        listSelect.value = preferred;
+        listSelect.style.display = 'inline-block';
+      } else {
+        listSelect.style.display = 'none';
+      }
+    }
+    if (prioSelect) {
+      prioSelect.style.display = isGoogle ? 'none' : 'inline-block';
+    }
+
+    // Reset active filter if list no longer exists
+    if (activeTaskListFilter && !googleLists.some((tl) => tl.id === activeTaskListFilter)) {
+      activeTaskListFilter = '';
+    }
+
+    // Filter pills when >= 2 Google Task Lists are active
+    const tabsEl = $('task-list-tabs');
+    if (tabsEl) {
+      if (isGoogle && googleLists.length >= 2) {
+        tabsEl.style.display = 'flex';
+        tabsEl.innerHTML = '';
+        const openTotal = (tasks || []).filter((t) => !t.completed).length;
+        const makePill = (label, listId) => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn btn-sm' + (activeTaskListFilter === listId ? ' btn-primary' : '');
+          btn.textContent = label;
+          btn.addEventListener('click', () => {
+            activeTaskListFilter = listId;
+            if (listSelect && listId) listSelect.value = listId;
+            renderTasks(appState ? appState.tasks : tasks, meta);
+          });
+          tabsEl.appendChild(btn);
+        };
+        makePill(`All (${openTotal})`, '');
+        googleLists.forEach((tl) => {
+          makePill(`${tl.title} (${tl.open_count || 0})`, tl.id);
+        });
+      } else {
+        tabsEl.style.display = 'none';
+      }
+    }
+
+    const visibleTasks = (tasks || []).filter((t) => {
+      if (!isGoogle || !activeTaskListFilter) return true;
+      return t.google_list_id === activeTaskListFilter;
+    });
+
+    if (!visibleTasks.length) {
+      const emptyMsg = isGoogle
+        ? 'No tasks in this Google Tasks list. Add one above to sync to Google Tasks & Kindle.'
+        : 'No priorities yet. Add one above to sync to your Kindle.';
+      list.innerHTML = `<div style="color:#5c5b57;font-size:14px;padding:8px 0;">${emptyMsg}</div>`;
       return;
     }
+
     list.innerHTML = '';
-    tasks.forEach((t) => {
+    visibleTasks.forEach((t) => {
       const row = document.createElement('div');
       row.className = 'task-item' + (t.completed ? ' done' : '');
-      row.innerHTML = `
-        <input type="checkbox" ${t.completed ? 'checked' : ''} style="width:20px;height:20px;cursor:pointer;" />
-        <div class="task-title"></div>
-        <span class="prio-pill">P${t.priority}</span>
-        <button class="btn btn-sm btn-danger" type="button">Delete</button>
-      `;
-      row.querySelector('.task-title').textContent = t.title;
-      row.querySelector('input').addEventListener('change', async () => {
-        const data = await api(`/api/tasks/${t.id}/toggle`, { method: 'POST' });
-        appState.tasks = data.tasks;
-        renderTasks(data.tasks);
-        toast('Synced to Kindle');
+      if (t.is_subtask) {
+        row.style.marginLeft = '24px';
+        row.style.borderLeft = '2px solid #d7d4cb';
+        row.style.paddingLeft = '10px';
+      }
+
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = Boolean(t.completed);
+      cb.style.cssText = 'width:20px;height:20px;cursor:pointer;flex-shrink:0;';
+      cb.addEventListener('change', async () => {
+        try {
+          const data = await api(`/api/tasks/${t.id}/toggle`, { method: 'POST' });
+          if (appState) {
+            appState.tasks = data.tasks;
+            appState.tasks_meta = data.tasks_meta;
+          }
+          renderTasks(data.tasks, data.tasks_meta);
+          toast(isGoogle ? 'Synced with Google Tasks & Kindle' : 'Synced to Kindle');
+        } catch (err) {
+          cb.checked = Boolean(t.completed);
+          toast('Sync error: ' + err.message);
+        }
       });
-      row.querySelector('button').addEventListener('click', async () => {
-        const data = await api(`/api/tasks/${t.id}`, { method: 'DELETE' });
-        appState.tasks = data.tasks;
-        renderTasks(data.tasks);
-        toast('Task removed');
+
+      const body = document.createElement('div');
+      body.className = 'task-title';
+      body.style.cssText = 'flex:1;min-width:0;';
+
+      const titleLine = document.createElement('div');
+      titleLine.textContent = (t.is_subtask ? '↳ ' : '') + (t.title || '');
+      body.appendChild(titleLine);
+
+      if (t.notes) {
+        const noteEl = document.createElement('div');
+        noteEl.style.cssText = 'font-size:12px;color:#5c5b57;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+        noteEl.textContent = t.notes;
+        body.appendChild(noteEl);
+      }
+
+      const badges = document.createElement('div');
+      badges.style.cssText = 'display:flex;align-items:center;gap:6px;flex-shrink:0;';
+
+      if (t.due_badge) {
+        const duePill = document.createElement('span');
+        duePill.className = 'prio-pill';
+        duePill.textContent = t.due_badge;
+        if (t.due_urgent) {
+          duePill.style.background = '#111';
+          duePill.style.color = '#fff';
+        }
+        badges.appendChild(duePill);
+      }
+
+      if (isGoogle) {
+        if (!activeTaskListFilter && t.google_list_title && googleLists.length >= 2) {
+          const listPill = document.createElement('span');
+          listPill.className = 'prio-pill';
+          listPill.textContent = t.google_list_title.slice(0, 14);
+          badges.appendChild(listPill);
+        }
+      } else {
+        const prioPill = document.createElement('span');
+        prioPill.className = 'prio-pill';
+        prioPill.textContent = `P${t.priority}`;
+        badges.appendChild(prioPill);
+      }
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn btn-sm btn-danger';
+      delBtn.type = 'button';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', async () => {
+        try {
+          const data = await api(`/api/tasks/${t.id}`, { method: 'DELETE' });
+          if (appState) {
+            appState.tasks = data.tasks;
+            appState.tasks_meta = data.tasks_meta;
+          }
+          renderTasks(data.tasks, data.tasks_meta);
+          toast(isGoogle ? 'Deleted from Google Tasks' : 'Task removed');
+        } catch (err) {
+          toast('Delete failed: ' + err.message);
+        }
       });
+
+      row.append(cb, body, badges, delBtn);
       list.appendChild(row);
     });
   }
@@ -344,6 +501,84 @@
         });
         list.appendChild(label);
       });
+
+      // Google Tasks 2-way list picker & scope upgrade banner
+      const reconnectBtn = $('gtasks-reconnect-btn');
+      const reconnectHint = $('gtasks-reconnect-hint');
+      const refreshTasksBtn = $('gtasks-refresh-btn');
+      const taskPicker = $('gtasks-list-picker');
+      const defaultRow = $('gtasks-default-row');
+      const defaultSelect = $('gtasks-default-select');
+
+      if (taskPicker) {
+        taskPicker.innerHTML = '';
+        if (!gcal.has_tasks_scope) {
+          if (reconnectBtn) reconnectBtn.style.display = 'inline-block';
+          if (reconnectHint) reconnectHint.style.display = 'block';
+          if (refreshTasksBtn) refreshTasksBtn.style.display = 'none';
+          if (defaultRow) defaultRow.style.display = 'none';
+        } else {
+          if (reconnectBtn) reconnectBtn.style.display = 'none';
+          if (reconnectHint) reconnectHint.style.display = 'none';
+          if (refreshTasksBtn) refreshTasksBtn.style.display = 'inline-block';
+
+          const taskLists = gcal.task_lists || [];
+          const selectedTaskSet = new Set(gcal.selected_task_list_ids || []);
+          if (!taskLists.length) {
+            const msg = document.createElement('div');
+            msg.style.cssText = 'font-size:13px;color:#5c5b57;';
+            msg.textContent = 'No Google Task lists loaded yet — click Refresh Task Lists above (ensure Google Tasks API is enabled in Google Cloud Console).';
+            taskPicker.appendChild(msg);
+          } else {
+            taskLists.forEach((tl) => {
+              const checked = selectedTaskSet.has(tl.id);
+              const label = document.createElement('label');
+              label.className = 'slide-chip' + (checked ? ' enabled' : '');
+              label.innerHTML = `
+                <div>
+                  <div style="font-weight:700;font-size:14px;"></div>
+                  <div style="font-size:12px;color:#5c5b57;">${tl.is_default ? 'Primary task list' : 'Google Task list'}</div>
+                </div>
+                <input type="checkbox" value="${tl.id}" ${checked ? 'checked' : ''} style="width:20px;height:20px;" />
+              `;
+              label.querySelector('div > div').textContent = tl.title;
+              label.querySelector('input').addEventListener('change', async () => {
+                const ids = Array.from(taskPicker.querySelectorAll('input:checked')).map((i) => i.value);
+                if (!ids.length) {
+                  toast('Keep at least one Google Task list selected');
+                  renderGoogleCalendar(gcal);
+                  return;
+                }
+                const updated = await api('/api/google/task-lists', {
+                  method: 'PATCH',
+                  body: JSON.stringify({ selected_ids: ids }),
+                });
+                renderGoogleCalendar(updated);
+                toast(`Syncing ${ids.length} Google Task list(s)`);
+                await loadState(false);
+              });
+              taskPicker.appendChild(label);
+            });
+          }
+
+          if (defaultRow && defaultSelect) {
+            const activeLists = taskLists.filter((tl) => selectedTaskSet.has(tl.id));
+            if (activeLists.length) {
+              defaultRow.style.display = 'flex';
+              defaultSelect.innerHTML = '';
+              activeLists.forEach((tl) => {
+                const opt = document.createElement('option');
+                opt.value = tl.id;
+                opt.textContent = tl.title;
+                defaultSelect.appendChild(opt);
+              });
+              defaultSelect.value = gcal.default_task_list_id || activeLists[0].id;
+            } else {
+              defaultRow.style.display = 'none';
+            }
+          }
+        }
+      }
     } else {
       badge.textContent = gcal.has_credentials ? 'READY TO CONNECT' : 'NOT CONNECTED';
       badge.style.background = '';
@@ -547,7 +782,7 @@
     const data = await api('/api/state');
     appState = data;
     $('status-meta').textContent = `${data.date_long} · ${data.time_str} · ${data.weather.city} ${data.weather.temp}°C`;
-    renderTasks(data.tasks);
+    renderTasks(data.tasks, data.tasks_meta);
     renderPomodoro(data.pomodoro);
     renderAgendaPreview(data.calendar);
     renderDeutsch(data.german, data.settings);
@@ -574,20 +809,57 @@
     $('add-task-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const title = $('new-task-title').value.trim();
-      const priority = parseInt($('new-task-priority').value, 10);
+      const priority = parseInt($('new-task-priority').value, 10) || 1;
+      const due_date = $('new-task-due') ? $('new-task-due').value.trim() : '';
+      const notes = $('new-task-notes') ? $('new-task-notes').value.trim() : '';
+      const listEl = $('new-task-list');
+      const list_id = listEl && listEl.style.display !== 'none' ? listEl.value : '';
       if (!title) return;
-      const data = await api('/api/tasks', {
-        method: 'POST',
-        body: JSON.stringify({ title, priority }),
-      });
-      $('new-task-title').value = '';
-      renderTasks(data.tasks);
-      toast('Added & synced to Kindle');
+      try {
+        const data = await api('/api/tasks', {
+          method: 'POST',
+          body: JSON.stringify({ title, priority, due_date, notes, list_id }),
+        });
+        $('new-task-title').value = '';
+        if ($('new-task-due')) $('new-task-due').value = '';
+        if ($('new-task-notes')) $('new-task-notes').value = '';
+        if (appState) {
+          appState.tasks = data.tasks;
+          appState.tasks_meta = data.tasks_meta;
+        }
+        renderTasks(data.tasks, data.tasks_meta);
+        const isGoogle = data.tasks_meta && data.tasks_meta.source === 'google';
+        toast(isGoogle ? 'Added to Google Tasks & Kindle' : 'Added & synced to Kindle');
+      } catch (err) {
+        toast('Could not add task: ' + err.message);
+      }
     });
 
+    if ($('sync-tasks-btn')) {
+      $('sync-tasks-btn').addEventListener('click', async () => {
+        toast('Syncing with Google Tasks...');
+        try {
+          const data = await api('/api/tasks/sync', { method: 'POST' });
+          if (appState) {
+            appState.tasks = data.tasks;
+            appState.tasks_meta = data.tasks_meta;
+          }
+          renderTasks(data.tasks, data.tasks_meta);
+          toast('Google Tasks synced');
+        } catch (err) {
+          toast('Sync error: ' + err.message);
+        }
+      });
+    }
+
     $('clear-done-btn').addEventListener('click', async () => {
-      const data = await api('/api/tasks/clear-completed', { method: 'POST' });
-      renderTasks(data.tasks);
+      const qs = activeTaskListFilter ? ('?list_id=' + encodeURIComponent(activeTaskListFilter)) : '';
+      const data = await api('/api/tasks/clear-completed' + qs, { method: 'POST' });
+      if (appState) {
+        appState.tasks = data.tasks;
+        appState.tasks_meta = data.tasks_meta;
+      }
+      renderTasks(data.tasks, data.tasks_meta);
       toast('Cleared completed tasks');
     });
 
@@ -812,11 +1084,39 @@
       toast('Google Calendars refreshed');
     });
 
+    if ($('gtasks-refresh-btn')) {
+      $('gtasks-refresh-btn').addEventListener('click', async () => {
+        toast('Refreshing Google Task Lists...');
+        try {
+          const gcal = await api('/api/google/task-lists/refresh', { method: 'POST' });
+          renderGoogleCalendar(gcal);
+          await loadState(false);
+          toast('Google Task Lists synced');
+        } catch (err) {
+          toast('Task list refresh failed: ' + err.message);
+        }
+      });
+    }
+
+    if ($('gtasks-default-select')) {
+      $('gtasks-default-select').addEventListener('change', async () => {
+        const picker = $('gtasks-list-picker');
+        const ids = picker ? Array.from(picker.querySelectorAll('input:checked')).map((i) => i.value) : [];
+        const updated = await api('/api/google/task-lists', {
+          method: 'PATCH',
+          body: JSON.stringify({ selected_ids: ids, default_list_id: $('gtasks-default-select').value }),
+        });
+        renderGoogleCalendar(updated);
+        toast('Default Google Task list updated');
+        await loadState(false);
+      });
+    }
+
     $('gcal-disconnect-btn').addEventListener('click', async () => {
       const gcal = await api('/api/google/disconnect', { method: 'POST' });
       renderGoogleCalendar(gcal);
       await loadState(false);
-      toast('Google Calendar disconnected');
+      toast('Google Calendar & Tasks disconnected');
     });
 
     $('auth-form').addEventListener('submit', async (e) => {
@@ -841,7 +1141,7 @@
     const params = new URLSearchParams(location.search);
     if (params.get('google') === 'connected') {
       switchTab('apps');
-      toast('Google Calendar connected!');
+      toast('Google Calendar & Tasks connected!');
       history.replaceState({}, '', '/app');
     } else if (params.get('google') === 'error') {
       switchTab('apps');
