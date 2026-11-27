@@ -48,17 +48,37 @@
       <div class="grid-2">
         <div class="card">
           <div class="card-title">
-            <span>Priorities Checklist</span>
-            <button id="clear-done-btn" class="btn btn-sm" type="button">Clear Done</button>
+            <span style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span>Priorities &amp; Tasks</span>
+              <span id="tasks-source-badge" class="prio-pill">LOCAL</span>
+            </span>
+            <div class="row" style="gap:6px;">
+              <button id="sync-tasks-btn" class="btn btn-sm" type="button" style="display:none;">Sync</button>
+              <button id="clear-done-btn" class="btn btn-sm" type="button">Clear Done</button>
+            </div>
           </div>
-          <form id="add-task-form" class="row" style="margin-bottom:14px;">
-            <input id="new-task-title" type="text" placeholder="Add a priority..." required />
-            <select id="new-task-priority" style="width:84px;">
-              <option value="1">P1</option>
-              <option value="2">P2</option>
-              <option value="3">P3</option>
-            </select>
-            <button class="btn btn-primary" type="submit">Add</button>
+          <div id="tasks-reconnect-banner" style="display:none;background:#f5f4ef;border:1px solid #111;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;line-height:1.45;">
+            <strong>Google Tasks 2-Way Sync Available:</strong> Enable the
+            <a href="https://console.cloud.google.com/apis/library/tasks.googleapis.com" target="_blank" rel="noopener">Google Tasks API</a>
+            in Google Cloud, then
+            <a href="/api/google/auth" style="font-weight:700;">Reconnect Google &rarr;</a>
+          </div>
+          <div id="task-list-tabs" class="row-wrap" style="display:none;margin-bottom:12px;gap:6px;"></div>
+          <form id="add-task-form" style="margin-bottom:14px;">
+            <div class="row" style="margin-bottom:8px;">
+              <input id="new-task-title" type="text" placeholder="Add a task (syncs 2-way with Google Tasks &amp; Kindle)..." required />
+              <button class="btn btn-primary" type="submit">Add</button>
+            </div>
+            <div class="row-wrap" style="gap:8px;">
+              <input id="new-task-due" type="date" style="width:154px;" title="Optional due date" />
+              <select id="new-task-list" style="display:none;width:auto;min-width:140px;" title="Google Task List"></select>
+              <select id="new-task-priority" style="width:84px;">
+                <option value="1">P1</option>
+                <option value="2">P2</option>
+                <option value="3">P3</option>
+              </select>
+              <input id="new-task-notes" type="text" placeholder="Optional short note..." style="flex:1;min-width:140px;" />
+            </div>
           </form>
           <div id="task-list"></div>
         </div>
@@ -262,36 +282,59 @@
     <section id="panel-apps" class="panel">
       <div class="card" id="google-cal-card">
         <div class="card-title">
-          <span>Google Calendar (Direct Multi-Calendar Sync)</span>
+          <span>Google Calendar &amp; Tasks (2-Way Sync)</span>
           <span id="gcal-badge" class="prio-pill">NOT CONNECTED</span>
         </div>
         <div id="gcal-connected-view" style="display:none;">
           <div class="row-wrap" style="justify-content:space-between;margin-bottom:12px;">
             <div>
               <strong id="gcal-account-email">Connected Account</strong>
-              <div style="font-size:13px;color:#5c5b57;">Choose which Google Calendars appear on your Kindle &amp; Smart Lock Screen:</div>
+              <div style="font-size:13px;color:#5c5b57;">Choose which Google Calendars &amp; Task Lists sync with your Kindle:</div>
             </div>
             <div class="row">
-              <button id="gcal-refresh-btn" class="btn btn-sm" type="button">Refresh List</button>
+              <button id="gcal-refresh-btn" class="btn btn-sm" type="button">Refresh Calendars</button>
               <button id="gcal-disconnect-btn" class="btn btn-sm btn-danger" type="button">Disconnect</button>
             </div>
           </div>
           <div id="gcal-calendar-list"></div>
+
+          <div id="gtasks-settings-section" style="margin-top:16px;padding-top:14px;border-top:1px solid #d7d4cb;">
+            <div class="row-wrap" style="justify-content:space-between;margin-bottom:10px;">
+              <div>
+                <strong>Google Tasks (Interactive 2-Way Sync)</strong>
+                <div style="font-size:13px;color:#5c5b57;">Check off tasks offline on Kindle or add/edit in /app — syncs both ways with Google Tasks.</div>
+              </div>
+              <div class="row" style="gap:6px;">
+                <a id="gtasks-reconnect-btn" href="/api/google/auth" class="btn btn-primary btn-sm" style="display:none;">Reconnect &amp; Enable Tasks &rarr;</a>
+                <button id="gtasks-refresh-btn" class="btn btn-sm" type="button" style="display:none;">Refresh Task Lists</button>
+              </div>
+            </div>
+            <div id="gtasks-reconnect-hint" style="display:none;font-size:13px;color:#444;background:#f5f4ef;padding:10px 12px;border-radius:8px;border:1px solid #d7d4cb;margin-bottom:10px;">
+              Your Google account is connected for Calendar only. Enable the
+              <a href="https://console.cloud.google.com/apis/library/tasks.googleapis.com" target="_blank" rel="noopener"><strong>Google Tasks API</strong></a>
+              in Google Cloud Console, then click <strong>Reconnect &amp; Enable Tasks</strong> above.
+            </div>
+            <div id="gtasks-list-picker"></div>
+            <div id="gtasks-default-row" class="row-wrap" style="display:none;margin-top:10px;align-items:center;gap:8px;">
+              <label for="gtasks-default-select" style="font-size:13px;font-weight:700;">Default list for new tasks:</label>
+              <select id="gtasks-default-select" style="width:auto;min-width:160px;"></select>
+            </div>
+          </div>
         </div>
 
         <div id="gcal-setup-view">
           <p style="font-size:14px;color:#5c5b57;margin-bottom:12px;line-height:1.45;">
-            Connect your Google account directly to merge <strong>all your Google Calendars</strong> (Primary, Work, Personal, etc.) onto your Kindle — no manual <code>.ics</code> links needed.
+            Connect your Google account directly to sync <strong>all your Google Calendars</strong> and <strong>Google Tasks (2-way interactive)</strong> onto your Kindle — no manual <code>.ics</code> links needed.
           </p>
           <div id="gcal-connect-ready" style="display:none;margin-bottom:14px;">
-            <a href="/api/google/auth" class="btn btn-primary">Connect Google Calendar &rarr;</a>
+            <a href="/api/google/auth" class="btn btn-primary">Connect Google Calendar &amp; Tasks &rarr;</a>
             <button id="gcal-edit-creds-btn" class="btn btn-sm" type="button" style="margin-left:8px;">Edit OAuth Credentials</button>
           </div>
           <div id="gcal-creds-box">
             <details style="margin-bottom:12px;font-size:13px;color:#444;background:#f5f4ef;padding:10px 12px;border-radius:8px;border:1px solid #d7d4cb;">
               <summary style="font-weight:700;cursor:pointer;">One-time 2-minute Google Cloud OAuth setup</summary>
               <ol style="margin:8px 0 0 18px;line-height:1.6;">
-                <li>Open <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener">Google Cloud Console</a> &rarr; enable <strong>Google Calendar API</strong>.</li>
+                <li>Open <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener">Google Cloud Console</a> &rarr; enable <strong>Google Calendar API</strong> and <a href="https://console.cloud.google.com/apis/library/tasks.googleapis.com" target="_blank" rel="noopener"><strong>Google Tasks API</strong></a>.</li>
                 <li>Go to <strong>Google Auth Platform &rarr; Audience</strong> &rarr; add your Gmail under <strong>Test users</strong>.</li>
                 <li>Go to <strong>Clients &rarr; Create Client &rarr; Web application</strong> and add this exact Authorized Redirect URI:
                   <div style="margin:4px 0;"><code id="gcal-redirect-uri" style="background:#fff;padding:4px 8px;border-radius:4px;border:1px solid #ccc;display:inline-block;word-break:break-all;">http://localhost:8000/api/google/callback</code></div>

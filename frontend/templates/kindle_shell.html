@@ -185,9 +185,9 @@
         </div>
 
         <div>
-          <div class="ls-section-title">TODAY'S TASKS</div>
+          <div class="ls-section-title">{% if tasks_meta.source == 'google' %}GOOGLE TASKS{% else %}TODAY'S TASKS{% endif %}</div>
           {% for t in tasks[:5] %}
-            <div class="ls-task-item">
+            <div class="ls-task-item" {% if t.is_subtask %}style="padding-left:24px;"{% endif %}>
               <div class="ls-task-box">
                 <svg width="28" height="28" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                   <rect x="2" y="2" width="20" height="20" fill="{{ '#000000' if t.completed else '#FFFFFF' }}" stroke="#000000" stroke-width="2.5"/>
@@ -196,7 +196,12 @@
                   {% endif %}
                 </svg>
               </div>
-              <div class="ls-task-label {% if t.completed %}done{% endif %}">{{ t.title }}</div>
+              <div class="ls-task-label {% if t.completed %}done{% endif %}">
+                {% if t.is_subtask %}<span style="color:#444444;">&#8627; </span>{% endif %}{{ t.title }}
+                {% if t.due_badge %}
+                  <span class="pill {% if t.due_urgent %}pill-dark{% endif %} mono" style="font-size:13px;padding:1px 6px;margin-left:6px;">{{ t.due_badge }}</span>
+                {% endif %}
+              </div>
             </div>
           {% endfor %}
         </div>
@@ -268,17 +273,22 @@
         <div class="ls-focus-label">TODAY'S NORTH STAR</div>
         <div class="serif" style="font-size:36px;font-weight:700;line-height:1.25;">{{ settings.daily_focus }}</div>
       </div>
-      <div class="ls-section-title">PRIORITY CHECKLIST</div>
+      <div class="ls-section-title">{% if tasks_meta.source == 'google' %}GOOGLE TASKS{% else %}PRIORITY CHECKLIST{% endif %}</div>
       <div style="margin-bottom:26px;">
         {% for t in tasks[:5] %}
-          <div class="ls-task-item">
+          <div class="ls-task-item" {% if t.is_subtask %}style="padding-left:26px;"{% endif %}>
             <div class="ls-task-box">
               <svg width="30" height="30" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                 <rect x="2" y="2" width="20" height="20" fill="{{ '#000000' if t.completed else '#FFFFFF' }}" stroke="#000000" stroke-width="2.5"/>
                 {% if t.completed %}<path d="M6 12l4 4 8-8" fill="none" stroke="#FFFFFF" stroke-width="2.8"/>{% endif %}
               </svg>
             </div>
-            <div class="ls-task-label {% if t.completed %}done{% endif %}" style="font-size:26px;">{{ t.title }}</div>
+            <div class="ls-task-label {% if t.completed %}done{% endif %}" style="font-size:26px;">
+              {% if t.is_subtask %}<span style="color:#444444;">&#8627; </span>{% endif %}{{ t.title }}
+              {% if t.due_badge %}
+                <span class="pill {% if t.due_urgent %}pill-dark{% endif %} mono" style="font-size:14px;padding:2px 7px;margin-left:8px;">{{ t.due_badge }}</span>
+              {% endif %}
+            </div>
           </div>
         {% endfor %}
       </div>
@@ -551,7 +561,7 @@
         <div class="col-cell">
           <div class="zone-box" style="height:426px;margin-bottom:0;overflow:hidden;">
             <div class="zone-header">
-              <div class="zone-title">PRIORITIES</div>
+              <div class="zone-title">{% if tasks_meta.source == 'google' %}GOOGLE TASKS{% else %}PRIORITIES{% endif %}</div>
               <div class="zone-meta mono" data-action="nav:planner" data-label="Open Planner">ALL &rarr;</div>
             </div>
             {% for t in tasks[:3] %}
@@ -565,7 +575,12 @@
                     {% endif %}
                   </div>
                 </div>
-                <div class="task-text" style="font-size:21px;">{{ t.title }}</div>
+                <div class="task-text" style="font-size:20px;">
+                  {% if t.is_subtask %}<span class="subtask-arrow">&#8627;</span>{% endif %}{{ t.title }}
+                  {% if t.due_badge %}
+                    <span class="pill {% if t.due_urgent %}pill-dark{% endif %} mono" style="font-size:13px;padding:1px 6px;margin-left:6px;">{{ t.due_badge }}</span>
+                  {% endif %}
+                </div>
               </div>
             {% endfor %}
           </div>
@@ -700,21 +715,51 @@
         {% endif %}
       </div>
 
-    {# -------------------- SCREEN: PLANNER -------------------- #}
-    {% elif screen == 'planner' %}
-      <div class="zone-box" style="background:#EEEEEE;border-width:4px;">
-        <div style="font-size:18px;font-weight:800;letter-spacing:2px;margin-bottom:8px;">TODAY'S DAILY FOCUS</div>
-        <div class="serif" style="font-size:34px;font-weight:700;line-height:1.25;">{{ settings.daily_focus }}</div>
+    {# -------------------- SCREEN: PLANNER (Local + 2-Way Google Tasks) -------------------- #}
+    {% elif screen == 'planner' or screen.startswith('planner_list_') %}
+      {% set has_list_tabs = (planner_lists | length) >= 2 %}
+      <div class="zone-box" style="background:#EEEEEE;border-width:4px;padding:16px 22px;margin-bottom:14px;">
+        <div style="font-size:16px;font-weight:800;letter-spacing:2px;margin-bottom:6px;">TODAY'S DAILY FOCUS</div>
+        <div class="serif" style="font-size:29px;font-weight:700;line-height:1.22;">{{ settings.daily_focus }}</div>
       </div>
 
-      <div class="zone-box" style="min-height:860px;">
-        <div class="zone-header">
-          <div class="zone-title">INTERACTIVE CHECKLIST (TAP TO TOGGLE)</div>
-          <div class="zone-meta mono">{{ tasks | selectattr('completed') | list | length }} / {{ tasks | length }} DONE</div>
+      {% if has_list_tabs %}
+        <div class="planner-tabs">
+          <div class="planner-tab-cell">
+            <button type="button"
+                    class="planner-tab-btn {% if planner_active_idx < 0 %}btn-solid{% endif %}"
+                    data-action="nav:planner"
+                    data-label="All Lists">
+              ALL ({{ tasks | rejectattr('completed') | list | length }})
+            </button>
+          </div>
+          {% for tl in planner_lists %}
+            <div class="planner-tab-cell">
+              <button type="button"
+                      class="planner-tab-btn {% if planner_active_idx == loop.index0 %}btn-solid{% endif %}"
+                      data-action="nav:planner_list_{{ loop.index0 }}"
+                      data-label="List {{ tl.title }}">
+                {{ tl.title[:11] | upper }} ({{ tl.open_count }})
+              </button>
+            </div>
+          {% endfor %}
         </div>
-        {% if tasks %}
-          {% for t in tasks[:7] %}
-            <div class="task-row {% if t.completed %}done{% endif %}"
+      {% endif %}
+
+      <div class="zone-box" style="height:{% if has_list_tabs %}852px{% else %}936px{% endif %};margin-bottom:14px;overflow:hidden;">
+        <div class="zone-header" style="margin-bottom:14px;">
+          <div class="zone-title">
+            {% if tasks_meta.source == 'google' %}
+              GOOGLE TASKS{% if planner_active_idx >= 0 %} &middot; {{ planner_active_list_title | upper }}{% endif %}
+            {% else %}
+              INTERACTIVE CHECKLIST (TAP TO TOGGLE)
+            {% endif %}
+          </div>
+          <div class="zone-meta mono">{{ planner_tasks | selectattr('completed') | list | length }} / {{ planner_tasks | length }} DONE</div>
+        </div>
+        {% if planner_tasks %}
+          {% for t in planner_tasks[:8] %}
+            <div class="task-row {% if t.completed %}done{% endif %} {% if t.is_subtask %}is-subtask{% endif %}"
                  data-action="task:toggle:{{ t.id }}"
                  data-label="Toggle {{ t.title }}">
               <div class="task-check">
@@ -724,24 +769,43 @@
                   {% endif %}
                 </div>
               </div>
-              <div class="task-text">{{ t.title }}</div>
-              <div class="task-prio"><span class="pill mono">P{{ t.priority }}</span></div>
+              <div class="task-text">
+                <div>{% if t.is_subtask %}<span class="subtask-arrow">&#8627;</span>{% endif %}{{ t.title }}</div>
+                {% if t.notes %}
+                  <div class="task-note">{{ t.notes[:66] }}{% if t.notes|length > 66 %}&hellip;{% endif %}</div>
+                {% endif %}
+              </div>
+              <div class="task-prio">
+                {% if t.due_badge %}
+                  <span class="pill {% if t.due_urgent %}pill-dark{% endif %} mono" style="font-size:16px;padding:4px 10px;">{{ t.due_badge }}</span>
+                {% elif tasks_meta.source == 'google' and planner_active_idx < 0 and has_list_tabs and t.google_list_title %}
+                  <span class="pill mono" style="font-size:15px;padding:3px 8px;">{{ t.google_list_title[:10] | upper }}</span>
+                {% elif tasks_meta.source != 'google' %}
+                  <span class="pill mono">P{{ t.priority }}</span>
+                {% endif %}
+              </div>
             </div>
           {% endfor %}
         {% else %}
-          <div style="font-size:26px;padding:32px 0;color:#444444;">No tasks yet. Add tasks from your iPhone, Mac, or Windows companion app (/app).</div>
+          <div style="font-size:26px;padding:32px 0;color:#444444;">
+            {% if tasks_meta.source == 'google' %}
+              All clear in this Google Tasks list! Add tasks in Google Tasks or /app and tap SYNC.
+            {% else %}
+              No tasks yet. Add tasks from your iPhone, Mac, or Windows companion app (/app).
+            {% endif %}
+          </div>
         {% endif %}
       </div>
 
-      <div class="btn-row">
+      <div class="btn-row" style="margin-bottom:0;">
         <div class="btn-row-cell">
-          <button type="button" class="big-btn" style="height:80px;line-height:74px;font-size:22px;" data-action="task:clear_done" data-label="Clear Completed Tasks">
+          <button type="button" class="big-btn" style="height:78px;line-height:72px;font-size:21px;" data-action="task:clear_done" data-label="Clear Completed Tasks">
             CLEAR COMPLETED
           </button>
         </div>
         <div class="btn-row-cell">
-          <button type="button" class="big-btn" style="height:80px;line-height:74px;font-size:22px;" data-action="sync:all" data-label="Sync Tasks">
-            SYNC WITH DEVICES
+          <button type="button" class="big-btn" style="height:78px;line-height:72px;font-size:21px;" data-action="sync:all" data-label="Sync Tasks">
+            {% if tasks_meta.source == 'google' %}SYNC GOOGLE TASKS{% else %}SYNC WITH DEVICES{% endif %}
           </button>
         </div>
       </div>
@@ -1397,7 +1461,7 @@
     <div class="dock-item {% if screen == 'home' %}active{% endif %}" data-action="nav:home" data-label="Home">HOME</div>
     <div class="dock-item {% if screen == 'today' %}active{% endif %}" data-action="nav:today" data-label="Today">TODAY</div>
     <div class="dock-item {% if screen in ('calendar', 'calendar_tomorrow') %}active{% endif %}" data-action="nav:calendar" data-label="Calendar">CALENDAR</div>
-    <div class="dock-item {% if screen == 'planner' %}active{% endif %}" data-action="nav:planner" data-label="Planner">PLANNER</div>
+    <div class="dock-item {% if screen == 'planner' or screen.startswith('planner_list_') %}active{% endif %}" data-action="nav:planner" data-label="Planner">PLANNER</div>
     <div class="dock-item {% if screen == 'pomodoro' %}active{% endif %}" data-action="nav:pomodoro" data-label="Pomodoro">POMO</div>
     <div class="dock-item dock-exit" data-action="system:exit" data-label="Return to Kindle">EXIT</div>
   </div>
