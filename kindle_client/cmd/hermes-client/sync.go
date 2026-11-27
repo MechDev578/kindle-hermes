@@ -46,8 +46,10 @@ type PomoLayout struct {
 }
 
 type ScreenLayout struct {
-	Topbar *Rect       `json:"topbar,omitempty"`
-	Pomo   *PomoLayout `json:"pomo,omitempty"`
+	Topbar       *Rect       `json:"topbar,omitempty"`
+	TopClock     *Rect       `json:"top_clock,omitempty"`
+	LSHeaderLeft *Rect       `json:"ls_header_left,omitempty"`
+	Pomo         *PomoLayout `json:"pomo,omitempty"`
 }
 
 type CachedScreen struct {
@@ -380,11 +382,34 @@ func (s *OfflineStore) LastSyncedLabel() string {
 	return s.manifest.SyncedAtLabel
 }
 
+func (s *OfflineStore) LastSyncedUnix() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.manifest == nil {
+		return 0
+	}
+	return s.manifest.SyncedAtUnix
+}
+
+func (s *OfflineStore) TzOffsetSec() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.manifest == nil {
+		return 0
+	}
+	return s.manifest.TzOffsetSec
+}
+
 func (s *OfflineStore) GetScreen(screenID string) (CachedScreen, string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.manifest == nil {
 		return CachedScreen{}, "", false
+	}
+
+	var homeTopClock *Rect
+	if h, ok := s.manifest.Screens["home"]; ok {
+		homeTopClock = h.Layout.TopClock
 	}
 
 	resolveFile := func(rel string, boxes []Hitbox) (CachedScreen, string, bool) {
@@ -396,7 +421,7 @@ func (s *OfflineStore) GetScreen(screenID string) (CachedScreen, string, bool) {
 		if err != nil || st.Size() < 256 {
 			return CachedScreen{}, "", false
 		}
-		return CachedScreen{File: rel, Hitboxes: boxes}, fullPath, true
+		return CachedScreen{File: rel, Hitboxes: boxes, Layout: ScreenLayout{TopClock: homeTopClock}}, fullPath, true
 	}
 
 	if de := s.manifest.Deutsch; de != nil {

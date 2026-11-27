@@ -163,7 +163,8 @@ func TestOfflineStoreBundleTimeSlotsOutboxAndFailover(t *testing.T) {
 		t.Fatalf("planner screen missing")
 	}
 	outPlanner := filepath.Join(dir, "rendered_planner.png")
-	if err := ApplyOfflineOverlays(basePath, outPlanner, "planner", scr, store.GetTaskStatesCopy(), store.pomo, false, "OFFLINE · 1 PENDING"); err != nil {
+	sampleStatus := FormatDeviceStatus(time.Date(2026, 11, 27, 14, 54, 0, 0, time.UTC), 84, false)
+	if err := ApplyOfflineOverlays(basePath, outPlanner, "planner", scr, store.GetTaskStatesCopy(), store.pomo, false, "OFFLINE · 1 PENDING", sampleStatus); err != nil {
 		t.Fatalf("ApplyOfflineOverlays planner failed: %v", err)
 	}
 	img, err := loadGrayPNG(outPlanner)
@@ -182,7 +183,7 @@ func TestOfflineStoreBundleTimeSlotsOutboxAndFailover(t *testing.T) {
 	}
 	pomoScr, pomoBase, _ := store.GetScreen("pomodoro")
 	outPomo := filepath.Join(dir, "rendered_pomo.png")
-	if err := ApplyOfflineOverlays(pomoBase, outPomo, "pomodoro", pomoScr, nil, pomoMid, true, ""); err != nil {
+	if err := ApplyOfflineOverlays(pomoBase, outPomo, "pomodoro", pomoScr, nil, pomoMid, true, "", sampleStatus); err != nil {
 		t.Fatalf("ApplyOfflineOverlays pomo failed: %v", err)
 	}
 
@@ -484,5 +485,66 @@ func TestLockControllerBeatsAmazonWallpaperAndNeverLoopsOnSuspend(t *testing.T) 
 	paintsMu.Unlock()
 	if countAfterCancel != 3 {
 		t.Fatalf("expected fast unlock to cancel lock paint (still 3), got %d", countAfterCancel)
+	}
+}
+
+func TestLiveClockBatteryOverlaysAndMinuteAlignment(t *testing.T) {
+	if sec, ok := ParseTZOffsetString("+0100"); !ok || sec != 3600 {
+		t.Fatalf("expected +0100 -> 3600, got %d (%v)", sec, ok)
+	}
+	if sec, ok := ParseTZOffsetString("-0530"); !ok || sec != -(5*3600+30*60) {
+		t.Fatalf("expected -0530 -> -19800, got %d (%v)", sec, ok)
+	}
+	if _, ok := ParseTZOffsetString("UTC"); ok {
+		t.Fatalf("expected invalid offset to fail")
+	}
+
+	tm := time.Date(2026, 11, 27, 14, 54, 42, 0, time.UTC)
+	d := NextMinuteDelay(tm)
+	if d < 18*time.Second || d > 19*time.Second {
+		t.Fatalf("expected ~18.15s to next minute boundary, got %v", d)
+	}
+
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.png")
+	if err := atomicWriteFile(basePath, makeDummyGrayPNG(t, 255)); err != nil {
+		t.Fatalf("write base png: %v", err)
+	}
+
+	status := FormatDeviceStatus(tm, 76, true)
+	if status.TimeStr != "14:54" || status.DateStr != "FRI 27 NOV" {
+		t.Fatalf("unexpected formatted status: %+v", status)
+	}
+
+	// Verify lockscreen live clock + battery overlay renders cleanly inside .ls-header-left without touching right column
+	lockOut := filepath.Join(dir, "lock_live.png")
+	if err := ApplyLockScreenOverlays(basePath, lockOut, status); err != nil {
+		t.Fatalf("ApplyLockScreenOverlays failed: %v", err)
+	}
+	lockImg, err := loadGrayPNG(lockOut)
+	if err != nil {
+		t.Fatalf("load lock out: %v", err)
+	}
+	darkLeft := 0
+	for y := 20; y < 105; y++ {
+		for x := 30; x < 550; x++ {
+			if lockImg.GrayAt(x, y).Y < 128 {
+				darkLeft++
+			}
+		}
+	}
+	darkRight := 0
+	for y := 0; y < 124; y++ {
+		for x := 612; x < kindleW; x++ {
+			if lockImg.GrayAt(x, y).Y < 128 {
+				darkRight++
+			}
+		}
+	}
+	if darkLeft < 1500 {
+		t.Fatalf("expected visible clock+battery ink in lockscreen left header, got %d dark pixels", darkLeft)
+	}
+	if darkRight != 0 {
+		t.Fatalf("expected lockscreen right header untouched, got %d dark pixels", darkRight)
 	}
 }

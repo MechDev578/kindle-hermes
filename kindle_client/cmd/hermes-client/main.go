@@ -152,20 +152,38 @@ func main() {
 	syncClient := &http.Client{Timeout: 90 * time.Second, Transport: transport}
 	bgClient := &http.Client{Timeout: 45 * time.Second, Transport: transport}
 
-	const tmpScreenPNG = "/tmp/hermes_screen.png"
-	const fallbackLockPNG = "/mnt/us/hermes_screensavers/hermes_01.png"
+	const (
+		tmpScreenPNG      = "/tmp/hermes_screen.png"
+		tmpLockPNG        = "/tmp/hermes_lock.png"
+		fallbackLockPNG   = "/mnt/us/hermes_screensavers/hermes_01.png"
+		autoSyncInterval  = 30 * time.Minute
+		autoRetryBackoff  = 5 * time.Minute
+	)
 
 	store := NewOfflineStore(cfg.CacheDir, fallbackLockPNG)
 
 	var (
-		mu           sync.Mutex
-		currentScreen = "home"
-		hitboxes     []Hitbox
-		pomoDirty    = false
-		syncInFlight = false
-		bannerMsg    = ""
-		bannerUntil  time.Time
+		mu              sync.Mutex
+		currentScreen   = "home"
+		hitboxes        []Hitbox
+		pomoDirty       = false
+		syncInFlight    = false
+		bannerMsg       = ""
+		bannerUntil     time.Time
+		lastPaintedTime = ""
+		lastPaintedBatt = -999
+		lastPaintedChg  = false
+		nextAutoSyncAt  time.Time
 	)
+
+	if syncedUnix := store.LastSyncedUnix(); syncedUnix > 0 {
+		nextAutoSyncAt = time.Unix(syncedUnix, 0).Add(autoSyncInterval)
+	}
+
+	getDeviceStatus := func(refreshTZ bool) DeviceStatus {
+		loc := DetectKindleLocation(store.TzOffsetSec(), refreshTZ)
+		return ReadDeviceStatus(loc)
+	}
 
 	var paintMu sync.Mutex
 	paintFile := func(pngPath string, fullFlash, invert bool) {
@@ -185,7 +203,13 @@ func main() {
 	lockCtrl := NewLockController(
 		store.PickLockScreenPNG,
 		func(pngPath string, fullFlash bool) {
-			paintFile(pngPath, fullFlash, false)
+			// Stamp exact current Kindle clock + battery % onto lock screen right before painting
+			status := getDeviceStatus(false)
+			if err := ApplyLockScreenOverlays(pngPath, tmpLockPNG, status); err == nil {
+				paintFile(tmpLockPNG, fullFlash, false)
+			} else {
+				paintFile(pngPath, fullFlash, false)
+			}
 		},
 		nil,
 		defaultLockTimings(),
@@ -198,6 +222,7 @@ func main() {
 		}
 		pomoNow, _ := store.ComputePomoNow(time.Now().Unix())
 		tasks := store.GetTaskStatesCopy()
+		status := getDeviceStatus(false)
 
 		mu.Lock()
 		currentScreen = screenID
@@ -211,7 +236,7 @@ func main() {
 		}
 		mu.Unlock()
 
-		if err := ApplyOfflineOverlays(basePath, tmpScreenPNG, screenID, scr, tasks, pomoNow, pDirty, activeBanner); err != nil {
+		if err := ApplyOfflineOverlays(basePath, tmpScreenPNG, screenID, scr, tasks, pomoNow, pDirty, activeBanner, status); err != nil {
 			fmt.Fprintf(os.Stderr, "[render] overlay error: %v\n", err)
 			return false
 		}
@@ -222,6 +247,11 @@ func main() {
 			}
 			if !lockCtrl.IsLocked() {
 				paintFile(tmpScreenPNG, fullFlash, false)
+				mu.Lock()
+				lastPaintedTime = status.TimeStr
+				lastPaintedBatt = status.Battery
+				lastPaintedChg = status.Charging
+				mu.Unlock()
 			}
 		}
 		return true
@@ -257,6 +287,9 @@ func main() {
 	}
 
 	runSync := func(manual bool) bool {
+		if !manual && !IsWiFiConnected() {
+			return false
+		}
 		mu.Lock()
 		if syncInFlight {
 			mu.Unlock()
@@ -279,6 +312,11 @@ func main() {
 		srcName, err := store.SyncNow(client, endpoints, manual)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[sync] skipped/failed (manual=%v): %v\n", manual, err)
+			mu.Lock()
+			if !manual {
+				nextAutoSyncAt = time.Now().Add(autoRetryBackoff)
+			}
+			mu.Unlock()
 			if manual {
 				pending := store.OutboxCount()
 				if pending > 0 {
@@ -292,6 +330,7 @@ func main() {
 
 		fmt.Fprintf(os.Stderr, "[sync] updated offline cache via %s\n", srcName)
 		mu.Lock()
+		nextAutoSyncAt = time.Now().Add(autoSyncInterval)
 		if curPomo, _ := store.ComputePomoNow(time.Now().Unix()); curPomo.Status != "running" {
 			pomoDirty = false
 		}
@@ -313,6 +352,19 @@ func main() {
 		return true
 	}
 
+	shouldAutoSyncNow := func() bool {
+		if !IsWiFiConnected() {
+			return false
+		}
+		if store.OutboxCount() > 0 {
+			return true
+		}
+		mu.Lock()
+		due := nextAutoSyncAt.IsZero() || !time.Now().Before(nextAutoSyncAt)
+		mu.Unlock()
+		return due
+	}
+
 	devPath, xb, yb, err := detectTouch(cfg.TouchDevice)
 	if err != nil {
 		_ = exec.Command(cfg.FBInkBin, "-c", "-f", "-m", "-y", "6", "Hermes OS: Touch device error: "+err.Error()).Run()
@@ -321,11 +373,14 @@ func main() {
 	}
 
 	// Instant Offline-First Startup:
-	// 1. If local cache exists -> paint Home immediately (works in Airplane Mode!) + silent background sync if Wi-Fi is up.
+	// 1. If local cache exists -> paint Home immediately with live Kindle time + battery,
+	//    then silently sync only if Wi-Fi is connected and >=30m elapsed (or outbox pending).
 	// 2. If cache is empty (very first boot) -> sync once immediately.
 	if store.HasCache() {
 		renderCurrent("home", true, false)
-		go runSync(false)
+		if shouldAutoSyncNow() {
+			go runSync(false)
+		}
 	} else {
 		_ = exec.Command(cfg.FBInkBin, "-c", "-f", "-m", "-y", "6", "KindleHermes OS: Downloading offline cache...").Run()
 		if _, err := store.SyncNow(syncClient, endpoints, true); err != nil {
@@ -335,6 +390,9 @@ func main() {
 			time.Sleep(5 * time.Second)
 			os.Exit(1)
 		}
+		mu.Lock()
+		nextAutoSyncAt = time.Now().Add(autoSyncInterval)
+		mu.Unlock()
 		renderCurrent("home", true, false)
 	}
 
@@ -433,9 +491,10 @@ func main() {
 		}
 	}()
 
-	// Local 1-minute ticker for offline Pomodoro countdown (zero network usage!)
-	pomoTicker := time.NewTicker(60 * time.Second)
-	defer pomoTicker.Stop()
+	// Minute-aligned timer drives live Kindle clock + battery % updates, offline Pomodoro ticks,
+	// and automatic 30-minute background Wi-Fi syncs (zero network usage in Airplane Mode).
+	minuteTimer := time.NewTimer(NextMinuteDelay(time.Now()))
+	defer minuteTimer.Stop()
 
 	for {
 		select {
@@ -452,34 +511,57 @@ func main() {
 
 			case strings.Contains(evLine, "outOfScreenSaver"):
 				unlockGen := lockCtrl.OnOutOfScreenSaver()
+				_ = getDeviceStatus(true) // refresh local timezone on wake
+				// Re-align minute timer to exact :00 boundary (CLOCK_MONOTONIC pauses during Kindle deep sleep)
+				if !minuteTimer.Stop() {
+					select {
+					case <-minuteTimer.C:
+					default:
+					}
+				}
+				minuteTimer.Reset(NextMinuteDelay(time.Now()))
 				mu.Lock()
 				scr := currentScreen
 				mu.Unlock()
 				go func(expectedGen uint64, screenID string) {
-					// Instant resume from local cache (zero Wi-Fi required)
+					// Instant resume from local cache with fresh live Kindle time + battery
 					time.Sleep(450 * time.Millisecond)
 					if lockCtrl.IsUnlockedGen(expectedGen) {
 						renderCurrent(screenID, true, false)
 					}
-					// Opportunistically refresh in background only if Wi-Fi reconnects
+					// If Wi-Fi is connected and >=30m elapsed (or outbox pending), silently sync
 					time.Sleep(2200 * time.Millisecond)
-					if lockCtrl.IsUnlockedGen(expectedGen) {
+					if lockCtrl.IsUnlockedGen(expectedGen) && shouldAutoSyncNow() {
 						runSync(false)
 					}
 				}(unlockGen, scr)
 			}
 
-		case <-pomoTicker.C:
-			pNow, completed := store.ComputePomoNow(time.Now().Unix())
+		case <-minuteTimer.C:
+			now := time.Now()
+			minuteTimer.Reset(NextMinuteDelay(now))
+
+			pNow, completed := store.ComputePomoNow(now.Unix())
+			status := getDeviceStatus(false)
+
 			mu.Lock()
 			scr := currentScreen
+			clockOrBattChanged := (status.TimeStr != lastPaintedTime) || (status.Battery != lastPaintedBatt) || (status.Charging != lastPaintedChg)
 			mu.Unlock()
-			if !lockCtrl.IsLocked() && (pNow.Status == "running" || completed) {
-				if scr == "pomodoro" || completed {
+
+			if !lockCtrl.IsLocked() {
+				if (pNow.Status == "running" || completed) && (scr == "pomodoro" || completed) {
 					mu.Lock()
 					pomoDirty = true
 					mu.Unlock()
 					renderCurrent("pomodoro", completed, completed)
+				} else if clockOrBattChanged {
+					// Crisp partial (non-flashing) e-ink update keeping time accurate to the minute
+					renderCurrent(scr, false, false)
+				}
+
+				if shouldAutoSyncNow() {
+					go runSync(false)
 				}
 			}
 
