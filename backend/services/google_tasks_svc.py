@@ -226,26 +226,9 @@ async def sync_from_google(now: datetime, force_refresh: bool = False) -> list[d
     token = await google_cal_svc._ensure_valid_access_token()
     completed_cutoff = (now - timedelta(days=14)).strftime("%Y-%m-%dT00:00:00Z")
 
-    async def fetch_list(client: httpx.AsyncClient, lid: str) -> list[dict[str, Any]]:
-        encoded = urllib.parse.quote(lid, safe="")
-        resp = await client.get(
-            f"{GOOGLE_TASKS_BASE}/lists/{encoded}/tasks",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "showCompleted": "true",
-                "showHidden": "false",
-                "showDeleted": "false",
-                "completedMin": completed_cutoff,
-                "maxResults": 100,
-            },
-        )
-        if resp.status_code == 404:
-            return []
-        if resp.status_code == 403:
-            raise RuntimeError("Google Tasks API 403 (enable Google Tasks API & reconnect Google in /app)")
-        resp.raise_for_status()
+    def _normalize_items(lid: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        for item in resp.json().get("items", []):
+        for item in items:
             if item.get("deleted") or item.get("hidden"):
                 continue
             title = (item.get("title") or "").strip()
@@ -268,6 +251,59 @@ async def sync_from_google(now: datetime, force_refresh: bool = False) -> list[d
             )
         return rows
 
+    async def fetch_list(client: httpx.AsyncClient, lid: str) -> list[dict[str, Any]]:
+        encoded = urllib.parse.quote(lid, safe="")
+        url = f"{GOOGLE_TASKS_BASE}/lists/{encoded}/tasks"
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Query 1: ALL open (needsAction) tasks — MUST NOT pass completedMin, because Google Tasks API
+        # filters out tasks without a completion timestamp whenever completedMin is set!
+        open_items: list[dict[str, Any]] = []
+        page_token = ""
+        for _ in range(5):
+            params: dict[str, Any] = {
+                "showCompleted": "false",
+                "showDeleted": "false",
+                "maxResults": 100,
+            }
+            if page_token:
+                params["pageToken"] = page_token
+            resp = await client.get(url, headers=headers, params=params)
+            if resp.status_code == 404:
+                return []
+            if resp.status_code == 403:
+                raise RuntimeError("Google Tasks API 403 (enable Google Tasks API & reconnect Google in /app)")
+            resp.raise_for_status()
+            payload = resp.json()
+            open_items.extend(payload.get("items", []))
+            page_token = (payload.get("nextPageToken") or "").strip()
+            if not page_token:
+                break
+
+        # Query 2: Recently completed (un-cleared) tasks from the last 14 days so checked items remain visible
+        completed_items: list[dict[str, Any]] = []
+        resp_done = await client.get(
+            url,
+            headers=headers,
+            params={
+                "showCompleted": "true",
+                "showHidden": "false",
+                "showDeleted": "false",
+                "completedMin": completed_cutoff,
+                "maxResults": 50,
+            },
+        )
+        if resp_done.status_code == 200:
+            completed_items = resp_done.json().get("items", [])
+
+        # Merge & deduplicate by task id (preserving open tasks first)
+        by_id: dict[str, dict[str, Any]] = {}
+        for row in _normalize_items(lid, open_items):
+            by_id[row["google_task_id"]] = row
+        for row in _normalize_items(lid, completed_items):
+            by_id.setdefault(row["google_task_id"], row)
+        return list(by_id.values())
+
     try:
         async with httpx.AsyncClient(timeout=12.0) as client:
             batches = await asyncio.gather(*(fetch_list(client, lid) for lid in selected_ids))
@@ -275,6 +311,7 @@ async def sync_from_google(now: datetime, force_refresh: bool = False) -> list[d
         synced = db.upsert_google_tasks(merged, selected_ids)
         _LAST_SYNC_TS = time.time()
         _LAST_SYNC_ERROR = ""
+        logger.info("Google Tasks synced %d task(s) across %d list(s)", len(synced), len(selected_ids))
         return synced
     except Exception as exc:
         logger.warning("Google Tasks sync failed (using cached mirror): %s", exc)

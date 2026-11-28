@@ -602,7 +602,16 @@ def test_google_tasks_two_way_sync_ui_and_offline_bundle(client: TestClient, mon
                 )
             for lid, items in remote_store.items():
                 if f"/lists/{lid}/tasks" in url:
-                    return FakeResponse(200, {"items": list(items)})
+                    p = params or {}
+                    filtered = list(items)
+                    # Mirror real Google Tasks API v1 behavior:
+                    # - completedMin excludes incomplete (needsAction) tasks!
+                    # - showCompleted=false excludes completed tasks!
+                    if p.get("completedMin"):
+                        filtered = [i for i in filtered if i.get("status") == "completed"]
+                    if str(p.get("showCompleted", "true")).lower() == "false":
+                        filtered = [i for i in filtered if i.get("status") != "completed"]
+                    return FakeResponse(200, {"items": filtered})
             return FakeResponse(404, {})
 
         async def post(self, url: str, headers=None, json=None):
@@ -777,7 +786,3 @@ def test_google_tasks_two_way_sync_ui_and_offline_bundle(client: TestClient, mon
 
 async def _async_val(val):
     return val
-
-
-
-
